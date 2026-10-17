@@ -1,0 +1,5 @@
+*.zip
+*.ZIP
+node_modules/
+context/
+publish/

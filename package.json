@@ -1,0 +1,23 @@
+{
+  "name": "memory-cabinet",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "test": "node --test --test-isolation=none test/*.test.js",
+    "build": "node scripts/build.js",
+    "qa": "node scripts/qa.js"
+  },
+  "files": [
+    "dist",
+    "src",
+    "spindle.json",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "devDependencies": {
+    "linkedom": "0.18.12"
+  }
+}
