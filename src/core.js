@@ -67,3 +67,34 @@ export async function inherit(parent,pm,cm,cutId,createdAt){
   x.branchHold=!valid||!Number.isInteger(x.lastChangeIndex)||x.lastChangeIndex>cut||!x.changeEvidence||!cm[x.lastChangeIndex]||!pm[x.lastChangeIndex]||pm[x.lastChangeIndex].id!==x.changeEvidence.id||!matches(pm[x.lastChangeIndex],x.changeEvidence.fingerprint)||!matches(cm[x.lastChangeIndex],x.changeEvidence.fingerprint)||!!x.branchHold;if(!x.branchHold)x.changeEvidence={id:cm[x.lastChangeIndex].id,fingerprint:cm[x.lastChangeIndex].digest};return x;
  });return s;
 }
+// Source selection for the analysis view. Message numbers are 1-based positions in
+// the full chat as the host orders it (hidden messages keep their slot but are never
+// listed or selectable). The input cap mirrors the service's preview check, measured
+// as the joined string length ('\n\n' between messages).
+export const MAX_INPUT_CHARS=60000;
+export const sourceNumber=(m,i)=>(Number.isSafeInteger(m?.index)&&m.index>=0?m.index:i)+1;
+export function rangeStatus(range,total){
+ const raw=[range?.start,range?.end],[start,end]=raw.map(x=>x===''||x===null||x===undefined?NaN:Number(x));
+ if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start<1||end<1)return {ok:false,warning:'시작·끝은 1 이상의 정수로 입력하세요.'};
+ if(start>end)return {ok:false,start,end,warning:'시작 번호가 끝 번호보다 큽니다.'};
+ if(!(total>0))return {ok:false,start,end,warning:'원문 목록을 읽은 뒤 범위를 확인합니다.'};
+ if(start>total)return {ok:false,start,end,warning:'이 범위는 채팅 기록 밖입니다. (전체 '+total+'개)'};
+ if(end>total)return {ok:true,start,end:total,warning:'끝 번호가 채팅 기록 밖이라 '+start+' - '+total+'까지만 선택합니다.'};
+ return {ok:true,start,end};
+}
+export function rangeIds(messages,ranges,total){
+ const spans=(ranges||[]).map(r=>rangeStatus(r,total)).filter(s=>s.ok);
+ return messages.filter((m,i)=>{const n=sourceNumber(m,i);return spans.some(s=>n>=s.start&&n<=s.end);}).map(m=>m.id);
+}
+export function effectiveSelection(messages,ranges,manual,total){
+ const covered=new Set(rangeIds(messages,ranges,total));
+ return messages.filter(m=>covered.has(m.id)||manual?.has(m.id)).map(m=>m.id);
+}
+export function recentIds(messages,n){
+ const count=Math.floor(Number(n));
+ return Number.isSafeInteger(count)&&count>0?messages.slice(-count).map(m=>m.id):[];
+}
+export function inputSize(messages,ids){
+ const chosen=new Set(ids),picked=messages.filter(m=>chosen.has(m.id));
+ return picked.reduce((sum,m)=>sum+String(m.content??'').length,0)+Math.max(0,picked.length-1)*2;
+}

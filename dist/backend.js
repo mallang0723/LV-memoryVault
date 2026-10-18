@@ -67,6 +67,37 @@ export async function inherit(parent,pm,cm,cutId,createdAt){
   x.branchHold=!valid||!Number.isInteger(x.lastChangeIndex)||x.lastChangeIndex>cut||!x.changeEvidence||!cm[x.lastChangeIndex]||!pm[x.lastChangeIndex]||pm[x.lastChangeIndex].id!==x.changeEvidence.id||!matches(pm[x.lastChangeIndex],x.changeEvidence.fingerprint)||!matches(cm[x.lastChangeIndex],x.changeEvidence.fingerprint)||!!x.branchHold;if(!x.branchHold)x.changeEvidence={id:cm[x.lastChangeIndex].id,fingerprint:cm[x.lastChangeIndex].digest};return x;
  });return s;
 }
+// Source selection for the analysis view. Message numbers are 1-based positions in
+// the full chat as the host orders it (hidden messages keep their slot but are never
+// listed or selectable). The input cap mirrors the service's preview check, measured
+// as the joined string length ('\n\n' between messages).
+export const MAX_INPUT_CHARS=60000;
+export const sourceNumber=(m,i)=>(Number.isSafeInteger(m?.index)&&m.index>=0?m.index:i)+1;
+export function rangeStatus(range,total){
+ const raw=[range?.start,range?.end],[start,end]=raw.map(x=>x===''||x===null||x===undefined?NaN:Number(x));
+ if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start<1||end<1)return {ok:false,warning:'시작·끝은 1 이상의 정수로 입력하세요.'};
+ if(start>end)return {ok:false,start,end,warning:'시작 번호가 끝 번호보다 큽니다.'};
+ if(!(total>0))return {ok:false,start,end,warning:'원문 목록을 읽은 뒤 범위를 확인합니다.'};
+ if(start>total)return {ok:false,start,end,warning:'이 범위는 채팅 기록 밖입니다. (전체 '+total+'개)'};
+ if(end>total)return {ok:true,start,end:total,warning:'끝 번호가 채팅 기록 밖이라 '+start+' - '+total+'까지만 선택합니다.'};
+ return {ok:true,start,end};
+}
+export function rangeIds(messages,ranges,total){
+ const spans=(ranges||[]).map(r=>rangeStatus(r,total)).filter(s=>s.ok);
+ return messages.filter((m,i)=>{const n=sourceNumber(m,i);return spans.some(s=>n>=s.start&&n<=s.end);}).map(m=>m.id);
+}
+export function effectiveSelection(messages,ranges,manual,total){
+ const covered=new Set(rangeIds(messages,ranges,total));
+ return messages.filter(m=>covered.has(m.id)||manual?.has(m.id)).map(m=>m.id);
+}
+export function recentIds(messages,n){
+ const count=Math.floor(Number(n));
+ return Number.isSafeInteger(count)&&count>0?messages.slice(-count).map(m=>m.id):[];
+}
+export function inputSize(messages,ids){
+ const chosen=new Set(ids),picked=messages.filter(m=>chosen.has(m.id));
+ return picked.reduce((sum,m)=>sum+String(m.content??'').length,0)+Math.max(0,picked.length-1)*2;
+}
 
 const validId=x=>typeof x==='string'&&/^[a-zA-Z0-9_-]{1,120}$/.test(x);
 const bytes=x=>new TextEncoder().encode(JSON.stringify(x)).byteLength;
@@ -121,13 +152,15 @@ export function createService(api){
    if(r.type==='load')return response();
    if(r.type==='connections'){gate('generation');return {...response(),connections:(await api.connections.list(user)).map(x=>({id:x.id,name:x.name,model:x.model}))};}
    if(r.type==='export')return {...response(),json:JSON.stringify({version:1,items:state.items,candidates:state.candidates},null,2)};
-   if(r.type==='sources'){gate('chat_mutation');return {...response(),messages:(await api.chat.getMessages(chatId)).filter(m=>!m.extra?.hidden).map(m=>({id:m.id,content:m.content}))};}
+   // `index` is the message's position in the full host-ordered chat, so the number
+   // shown in the UI (index+1) stays stable when hidden messages are left out.
+   if(r.type==='sources'){gate('chat_mutation');const all=await api.chat.getMessages(chatId);return {...response(),total:all.length,messages:all.map((m,index)=>({m,index})).filter(({m})=>!m.extra?.hidden).map(({m,index})=>({id:m.id,content:m.content,index}))};}
    if(r.type==='preview'){
     gate('generation');gate('chat_mutation');
     if(!['raw','quiet'].includes(r.mode)||!validId(r.connection))throw Error('모델 연결 확인 필요');
     const all=await api.chat.getMessages(chatId),selected=all.filter(m=>r.ids?.includes(m.id)&&!m.extra?.hidden);
     if(!selected.length||selected.length!==new Set(r.ids).size)throw Error('숨김/누락 원문 선택');
-    const input=selected.map(m=>m.content).join('\n\n');if(input.length>60000)throw Error('원문 크기 초과');
+    const input=selected.map(m=>m.content).join('\n\n');if(input.length>MAX_INPUT_CHARS)throw Error('원문 크기 초과: 선택 입력 '+input.length.toLocaleString('en-US')+'자 / 한도 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자. 범위를 줄이거나 나눠서 분석하세요.');
     const token=crypto.randomUUID();previews.set(user+':'+token,{chatId,revision:state.revision,mode:r.mode,connection:r.connection,input,ids:r.ids,evidence:await Promise.all(selected.map(async m=>({id:m.id,index:all.indexOf(m),fingerprint:await fingerprint(m.content)})))});
     if(previews.size>100)previews.delete(previews.keys().next().value);
     return {...response(),preview:{token,input,mode:r.mode,connection:r.connection}};

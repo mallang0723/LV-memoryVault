@@ -1,4 +1,4 @@
-import {empty,apply,clone,safe,validate,inherit,review,fingerprint,publicItems,injectionText} from './core.js';
+import {empty,apply,clone,safe,validate,inherit,review,fingerprint,publicItems,injectionText,MAX_INPUT_CHARS} from './core.js';
 const validId=x=>typeof x==='string'&&/^[a-zA-Z0-9_-]{1,120}$/.test(x);
 const bytes=x=>new TextEncoder().encode(JSON.stringify(x)).byteLength;
 export function createService(api){
@@ -52,13 +52,15 @@ export function createService(api){
    if(r.type==='load')return response();
    if(r.type==='connections'){gate('generation');return {...response(),connections:(await api.connections.list(user)).map(x=>({id:x.id,name:x.name,model:x.model}))};}
    if(r.type==='export')return {...response(),json:JSON.stringify({version:1,items:state.items,candidates:state.candidates},null,2)};
-   if(r.type==='sources'){gate('chat_mutation');return {...response(),messages:(await api.chat.getMessages(chatId)).filter(m=>!m.extra?.hidden).map(m=>({id:m.id,content:m.content}))};}
+   // `index` is the message's position in the full host-ordered chat, so the number
+   // shown in the UI (index+1) stays stable when hidden messages are left out.
+   if(r.type==='sources'){gate('chat_mutation');const all=await api.chat.getMessages(chatId);return {...response(),total:all.length,messages:all.map((m,index)=>({m,index})).filter(({m})=>!m.extra?.hidden).map(({m,index})=>({id:m.id,content:m.content,index}))};}
    if(r.type==='preview'){
     gate('generation');gate('chat_mutation');
     if(!['raw','quiet'].includes(r.mode)||!validId(r.connection))throw Error('모델 연결 확인 필요');
     const all=await api.chat.getMessages(chatId),selected=all.filter(m=>r.ids?.includes(m.id)&&!m.extra?.hidden);
     if(!selected.length||selected.length!==new Set(r.ids).size)throw Error('숨김/누락 원문 선택');
-    const input=selected.map(m=>m.content).join('\n\n');if(input.length>60000)throw Error('원문 크기 초과');
+    const input=selected.map(m=>m.content).join('\n\n');if(input.length>MAX_INPUT_CHARS)throw Error('원문 크기 초과: 선택 입력 '+input.length.toLocaleString('en-US')+'자 / 한도 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자. 범위를 줄이거나 나눠서 분석하세요.');
     const token=crypto.randomUUID();previews.set(user+':'+token,{chatId,revision:state.revision,mode:r.mode,connection:r.connection,input,ids:r.ids,evidence:await Promise.all(selected.map(async m=>({id:m.id,index:all.indexOf(m),fingerprint:await fingerprint(m.content)})))});
     if(previews.size>100)previews.delete(previews.keys().next().value);
     return {...response(),preview:{token,input,mode:r.mode,connection:r.connection}};
