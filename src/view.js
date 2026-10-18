@@ -1,5 +1,5 @@
 import {vaultStyle} from './vault-style.js';
-import {publicItems,selectSafeCandidates,injectionText,MAX_INPUT_CHARS,sourceNumber,rangeStatus,rangeIds,effectiveSelection,recentIds,inputSize} from './core.js';
+import {publicItems,selectSafeCandidates,injectionText,MAX_INPUT_CHARS,sourceNumber,rangeStatus,rangeIds,effectiveSelection,recentIds,inputSize,localTimeZone} from './core.js';
 const tabs=[['overview','개요'],['promises','약속'],['flows','진행 흐름'],['anchors','기억 앵커'],['scenes','장면 기억'],['elements','요소 기억'],['wiki','이야기 위키']];
 const names=Object.fromEntries(tabs);
 const hasLifecycle=layer=>['promises','flows'].includes(layer);
@@ -220,7 +220,7 @@ export function createView(root,{send,get,ui}){
   button('+ 범위 추가',()=>{ranges.push(total?{start:Math.max(1,total-19),end:total}:{start:1,end:20});render();},box);
   const count=el('p',undefined,c),cap=el('p',undefined,c,'lv-warning'),list=el('div',undefined,c,'lv-source-list'),picks=[];
   const sync=()=>{
-   const covered=new Set(rangeIds(msgs,ranges,total)),chosen=effectiveSelection(msgs,ranges,ui.sources,total),size=inputSize(msgs,chosen),over=size>MAX_INPUT_CHARS;
+   const covered=new Set(rangeIds(msgs,ranges,total)),chosen=effectiveSelection(msgs,ranges,ui.sources,total),size=inputSize(msgs,chosen,localTimeZone()),over=size>MAX_INPUT_CHARS;
    for(const {m,pick,item} of picks){pick.checked=covered.has(m.id)||ui.sources.has(m.id);pick.disabled=covered.has(m.id);item.classList.toggle('is-selected',pick.checked);}
    count.textContent='메시지 '+chosen.length+'개 선택됨 · 입력 '+size.toLocaleString('en-US')+' / '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자';count.className=over?'lv-warning':'mmc-muted';count.dataset.selected=String(chosen.length);
    cap.textContent=over?'선택한 원문이 한 번에 분석할 수 있는 입력 한도('+MAX_INPUT_CHARS.toLocaleString('en-US')+'자)를 넘었습니다. 범위를 줄이거나 나눠서 분석하세요.':'';cap.hidden=!over;
@@ -253,7 +253,7 @@ export function createView(root,{send,get,ui}){
   }
   const mode=select('분석 모드',[['raw','직접 분석 (raw)'],['quiet','프리셋 적용 (quiet)']],c,ui.mode||'raw');mode.onchange=()=>ui.mode=mode.value;
   const connection=select('모델 연결',[['','연결을 선택하세요'],...ui.connections.map(x=>[x.id,x.name+' · '+(x.model||'(모델 미지정)')])],c,ui.connection||'');connection.onchange=()=>ui.connection=connection.value;
-  const preview=button('입력·모델 미리보기',()=>{const {chosen,over}=sync();if(over){ui.note('입력 한도 초과: 선택을 줄이세요.');return;}send('preview',{ids:chosen,mode:mode.value,connection:connection.value});},c,'mmc-primary');
+  const preview=button('입력·모델 미리보기',()=>{const {chosen,over}=sync();if(over){ui.note('입력 한도 초과: 선택을 줄이세요.');return;}send('preview',{ids:chosen,mode:mode.value,connection:connection.value,timeZone:localTimeZone()});},c,'mmc-primary');
   sync();
   if(ui.preview){const p=card(main,'분석 전 최종 확인');const profile=ui.connections.find(x=>x.id===ui.preview.connection);el('p',ui.preview.mode+' · '+(profile?.name||ui.preview.connection)+' · '+(profile?.model||''),p);const input=el('pre',ui.preview.input,p,'lv-source-text'+(ui.preview.input.length>600?' is-clipped':''));if(ui.preview.input.length>600){const t=button('입력 전체 펼치기',()=>{const now=input.classList.toggle('is-clipped');t.textContent=now?'입력 전체 펼치기':'입력 접기';},p,'mmc-ghost mmc-sm');input.onclick=()=>t.click();}el('p','선택 원문에 비밀이 없는지 직접 확인하세요. 이 버튼을 누르면 선택 모델로 전송합니다.',p,'lv-warning');button('이 입력과 모델로 분석 확인',()=>{send('analyze',{token:ui.preview.token,confirm:true});ui.preview=null;},p,'mmc-primary');}
  }

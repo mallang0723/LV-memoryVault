@@ -21,7 +21,7 @@ export function setup(ctx){
   if(reply.json){ui.transfer=reply.json;ui.tab='settings';}
   if(reply.saved){ui.editor=null;if(p.type==='analyze')ui.tab='overview';}
   if(['reset','restoreBackup'].includes(p.type)){epoch++;pending.clear();ui.messages=[];ui.total=0;ui.sources.clear();ui.expanded.clear();ui.lastPick=null;ui.preview=null;ui.selected.clear();ui.editor=null;ui.limits={};ui.queries={};ui.queueLayer='all';ui.detail=null;}
-  ui.status=reply.saved?'저장 완료':reply.output||'불러오기 완료';
+  ui.status=reply.notice||(reply.saved?'저장 완료':reply.output||'불러오기 완료');
   view.render();
  });
  const offSwitch=ctx.events.on('CHAT_SWITCHED',p=>{

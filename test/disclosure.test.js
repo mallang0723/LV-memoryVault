@@ -32,11 +32,11 @@ for(const mode of ['raw','quiet']){
   for(const kind of ['raw','quiet'])f.a.generate[kind]=async input=>{calls.push({kind,input});return {content:'[]'};};
   const request={type:'preview',chatId:'a',mode,connection:'selected-local',ids:['m']};
   const {preview}=await s.run(request,'owner');const token=preview.token;
-  assert.equal(preview.connection,'selected-local');assert.equal(preview.input,'public');assert.equal(preview.mode,mode);assert.equal(calls.length,0);
+  assert.equal(preview.connection,'selected-local');assert.equal(preview.input,'[메시지 전송 시각 기준: UTC (사용자 시간대 미확인)]\n\n[전송 시각 미상] public');assert.equal(preview.mode,mode);assert.equal(calls.length,0);
   request.connection='changed';request.ids[0]='hidden';preview.connection='tampered';preview.input='tampered';preview.mode='tampered';
   await s.run({type:'analyze',chatId:'a',revision:0,token,confirm:true,mode:mode==='raw'?'quiet':'raw',connection:'override',input:'override',ids:['hidden']},'owner');
   assert.equal(calls.length,1);assert.equal(calls[0].kind,mode);assert.equal(calls[0].input.connection_id,'selected-local');
-  assert.equal(calls[0].input.messages[1].content,'public');assert.match(calls[0].input.messages[0].content,/JSON array of memory candidates/);
+  assert.equal(calls[0].input.messages[1].content,'[메시지 전송 시각 기준: UTC (사용자 시간대 미확인)]\n\n[전송 시각 미상] public');assert.match(calls[0].input.messages[0].content,/JSON array of memory candidates/);
   await assert.rejects(()=>s.run({type:'analyze',chatId:'a',revision:1,token,confirm:true},'owner'),/명시 확인/);assert.equal(calls.length,1);
  });
 }

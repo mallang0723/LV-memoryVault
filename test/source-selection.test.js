@@ -1,6 +1,6 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
 import {parseHTML} from 'linkedom';
-import {MAX_INPUT_CHARS,sourceNumber,rangeStatus,rangeIds,effectiveSelection,recentIds,inputSize} from '../src/core.js';
+import {MAX_INPUT_CHARS,sourceNumber,rangeStatus,rangeIds,effectiveSelection,recentIds,inputSize,sourceInput,localTimeZone} from '../src/core.js';
 import {createService} from '../src/service.js';
 import {setup} from '../src/frontend.js';
 
@@ -35,8 +35,10 @@ test('recent N takes the tail of the visible list and rejects bad counts',()=>{
  assert.deepEqual(recentIds(visible,'x'),[]);
 });
 
-test('input size mirrors the joined preview input',()=>{
- assert.equal(inputSize(visible,['a','c']),'one\n\nthree'.length);
+test('input size mirrors the time-stamped preview input',()=>{
+ const head='[메시지 전송 시각 기준: UTC (사용자 시간대 미확인)]\n\n';
+ assert.equal(inputSize(visible,['a','c']),(head+'[전송 시각 미상] one\n\n[전송 시각 미상] three').length);
+ assert.equal(inputSize(visible,['a'],'Asia/Seoul'),sourceInput([visible[0]],'Asia/Seoul').length);
  assert.equal(inputSize(visible,[]),0);
  assert.equal(MAX_INPUT_CHARS,60000);
 });
@@ -46,13 +48,14 @@ const fakeApi=messages=>{const db=new Map();return {permissions:{has:()=>true},c
 test('sources number messages by full-chat position and exclude hidden ones',async()=>{
  const s=createService(fakeApi([{id:'m1',content:'a',extra:{}},{id:'m2',content:'b',extra:{hidden:true}},{id:'m3',content:'c'}]));
  const r=await s.run({type:'sources',chatId:'a'},'owner');
- assert.equal(r.total,3);assert.deepEqual(r.messages,[{id:'m1',content:'a',index:0},{id:'m3',content:'c',index:2}]);
+ assert.equal(r.total,3);assert.deepEqual(r.messages,[{id:'m1',content:'a',index:0,send_date:null},{id:'m3',content:'c',index:2,send_date:null}]);
 });
 
 test('preview rejects selections over the input cap with the limit in the message',async()=>{
  const big='x'.repeat(40000),s=createService(fakeApi([{id:'m1',content:big},{id:'m2',content:big}]));
- await assert.rejects(()=>s.run({type:'preview',chatId:'a',ids:['m1','m2'],mode:'raw',connection:'c1'},'owner'),/원문 크기 초과.*80,002자.*60,000자/);
- const ok=await s.run({type:'preview',chatId:'a',ids:['m1'],mode:'raw',connection:'c1'},'owner');assert.equal(ok.preview.input.length,40000);
+ await assert.rejects(()=>s.run({type:'preview',chatId:'a',ids:['m1','m2'],mode:'raw',connection:'c1'},'owner'),/원문 크기 초과.*80,0\d\d자.*60,000자/);
+ const ok=await s.run({type:'preview',chatId:'a',ids:['m1'],mode:'raw',connection:'c1'},'owner');
+ assert.equal(ok.preview.input.length,sourceInput([{id:'m1',content:big}]).length);assert.ok(ok.preview.input.endsWith(big));
 });
 
 const mount=()=>{
@@ -117,7 +120,7 @@ test('long previews collapse and expand without toggling the checkbox',()=>{
 
 test('selections over the input cap show the limit and block the preview request',()=>{
  const v=mount();const big='x'.repeat(31000);v.load([{id:'a',content:big,index:0},{id:'b',content:big,index:1}],2);
- v.click('전체 선택');assert.match(v.root.textContent,/62,002 \/ 60,000자/);assert.match(v.root.textContent,/입력 한도\(60,000자\)를 넘었습니다/);
+ v.click('전체 선택');assert.ok(v.root.textContent.includes(inputSize([{id:'a',content:big},{id:'b',content:big}],['a','b'],localTimeZone()).toLocaleString('en-US')+' / 60,000자'));assert.match(v.root.textContent,/입력 한도\(60,000자\)를 넘었습니다/);
  const before=v.sent.length,btn=[...v.root.querySelectorAll('button')].find(x=>x.textContent==='입력·모델 미리보기');
  assert.ok(btn.disabled);btn.click();assert.equal(v.sent.length,before);
  v.click('선택 해제');

@@ -25,10 +25,43 @@ export function parseCandidates(content){
  const fence=text.match(/```[a-zA-Z]*[ \t]*\r?\n?([\s\S]*?)```/);
  const attempts=[text];if(fence)attempts.push(fence[1].trim());
  for(const base of [...attempts]){for(let i=base.indexOf('['),n=0;i>=0&&n<20;i=base.indexOf('[',i+1),n++){const b=balancedArray(base,i);if(b)attempts.push(b);}const s=base.indexOf('['),e=base.lastIndexOf(']');if(s>=0&&e>s)attempts.push(base.slice(s,e+1));}
- for(const a of attempts){let v;try{v=safe(a);}catch(error){if(error instanceof SyntaxError)continue;throw error;}if(Array.isArray(v)&&v.every(x=>x&&typeof x==='object'&&!Array.isArray(x)))return v;}
+ // Some models wrap the array: {"candidates":[...]}, {"memories":[...]}, {"items":[...]}.
+ // Prefer arrays of objects; an array with stray non-objects is still returned so the
+ // per-item normalization can skip those entries instead of failing the whole batch.
+ const unwrap=v=>Array.isArray(v)?v:v&&typeof v==='object'?['candidates','memories','items'].map(k=>v[k]).find(Array.isArray):undefined;
+ const parsed=[];
+ for(const a of attempts){let v;try{v=unwrap(safe(a));}catch(error){if(error instanceof SyntaxError)continue;throw error;}if(!v)continue;if(v.every(x=>x&&typeof x==='object'&&!Array.isArray(x)))return v;parsed.push(v);}
+ const loose=parsed.find(v=>v.some(x=>x&&typeof x==='object'&&!Array.isArray(x)));if(loose)return loose;
  const head=content.trim().slice(0,120);
  throw Error('모델 응답을 JSON 배열로 해석하지 못했습니다. 다시 시도하거나 다른 모델·모드를 선택하세요. 응답 앞부분: '+(head||'(빈 응답)')+(content.trim().length>120?'…':''));
 }
+// Per-item normalization of model candidates. Common model variations are accepted;
+// anything still unusable is skipped with a reason instead of failing the whole batch.
+const layerAlias=new Map();
+for(const k of layers){const one=k==='wiki'?'wikis':k.replace(/s$/,'');for(const a of [k,one,layerNames[k],layerNames[k].replace(/\s+/g,'')])layerAlias.set(a.toLowerCase(),k);}
+export const textKeys=['text','content','summary','memory'];
+const scalar=v=>typeof v==='string'?v.trim():typeof v==='number'&&Number.isFinite(v)||typeof v==='boolean'?String(v):undefined;
+const shown=v=>{const t=typeof v==='string'?v:JSON.stringify(v);return t.length>30?t.slice(0,30)+'…':t;};
+export function normalizeCandidate(x){
+ if(!x||typeof x!=='object'||Array.isArray(x))return {error:'객체가 아님'};
+ if(x.layer===undefined||x.layer===null||x.layer==='')return {error:'필드 layer 누락'};
+ const name=scalar(x.layer),layer=name===undefined?undefined:layerAlias.get(name.toLowerCase().replace(/\s+/g,' '))||layerAlias.get(name.toLowerCase().replace(/\s+/g,''));
+ if(!layer)return {error:'필드 layer 값 '+shown(x.layer)+' 인식 불가'};
+ const key=textKeys.find(k=>x[k]!==undefined&&x[k]!==null);
+ if(!key)return {error:'필드 text 누락'};
+ const text=scalar(x[key]);
+ if(text===undefined)return {error:'필드 '+key+' 형식 오류(문자열 아님)'};
+ if(!text)return {error:'필드 '+key+' 비어 있음'};
+ if(text.length>20000)return {error:'필드 '+key+' 20,000자 초과'};
+ const scope=scalar(x.scope)?.toLowerCase();
+ return {item:{layer,text,scope:['public','unknown'].includes(scope)?scope:'unknown'}};
+}
+export function normalizeCandidates(list){
+ const items=[],skipped=[];
+ (Array.isArray(list)?list:[]).forEach((x,i)=>{const r=normalizeCandidate(x);if(r.item)items.push(r.item);else skipped.push({index:i,reason:r.error});});
+ return {items,skipped,total:Array.isArray(list)?list.length:0};
+}
+export const skippedNotice=n=>n.skipped.length?n.total+'개 중 '+n.skipped.length+'개 형식 오류로 제외(예: '+(n.skipped[0].index+1)+'번째 항목 '+n.skipped[0].reason+')':'';
 export function item(x){
  if(!x||!layers.includes(x.layer)||typeof x.text!=='string'||x.text.length>20000||typeof x.id!=='string'||!x.id||x.id.length>120) throw Error('항목 형식 오류');
  if(!Array.isArray(x.evidence||[])||!Array.isArray(x.knownBy||[])||(x.evidence||[]).some(e=>!e||typeof e.id!=='string'||!Number.isInteger(e.index)||typeof e.fingerprint!=='string'))throw Error('근거 형식 오류');
@@ -91,7 +124,7 @@ export async function inherit(parent,pm,cm,cutId,createdAt){
 // Source selection for the analysis view. Message numbers are 1-based positions in
 // the full chat as the host orders it (hidden messages keep their slot but are never
 // listed or selectable). The input cap mirrors the service's preview check, measured
-// as the joined string length ('\n\n' between messages).
+// on the time-stamped input built by sourceInput().
 export const MAX_INPUT_CHARS=60000;
 export const sourceNumber=(m,i)=>(Number.isSafeInteger(m?.index)&&m.index>=0?m.index:i)+1;
 export function rangeStatus(range,total){
@@ -115,9 +148,32 @@ export function recentIds(messages,n){
  const count=Math.floor(Number(n));
  return Number.isSafeInteger(count)&&count>0?messages.slice(-count).map(m=>m.id):[];
 }
-export function inputSize(messages,ids){
- const chosen=new Set(ids),picked=messages.filter(m=>chosen.has(m.id));
- return picked.reduce((sum,m)=>sum+String(m.content??'').length,0)+Math.max(0,picked.length-1)*2;
+// Analysis input: a time-zone line, then each message prefixed with its host send time
+// (Lumiverse 1.2.5 Message.send_date, unix seconds; millisecond values are tolerated).
+// The service builds the model input and the view measures the cap with this same
+// function, so the preview check and the on-screen size never disagree.
+export function validTimeZone(zone){
+ if(typeof zone!=='string'||!/^[A-Za-z0-9_+\-\/]{1,64}$/.test(zone))return null;
+ try{new Intl.DateTimeFormat('en-US',{timeZone:zone});return zone;}catch{return null;}
+}
+export const localTimeZone=()=>{try{return validTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone);}catch{return null;}};
+const formatters=new Map();
+export function sentStamp(m,zone){
+ const raw=Number(m?.send_date??m?.created_at);
+ if(!Number.isFinite(raw)||raw<=0)return null;
+ const ms=raw>1e11?raw:raw*1000,tz=validTimeZone(zone)||'UTC';
+ if(!formatters.has(tz))formatters.set(tz,new Intl.DateTimeFormat('en-US',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}));
+ let p;try{p=Object.fromEntries(formatters.get(tz).formatToParts(new Date(ms)).map(x=>[x.type,x.value]));}catch{return null;}
+ return p.year+'-'+p.month+'-'+p.day+' '+(p.hour==='24'?'00':p.hour)+':'+p.minute;
+}
+export function sourceInput(messages,zone){
+ if(!messages.length)return '';
+ const tz=validTimeZone(zone),header='[메시지 전송 시각 기준: '+(tz||'UTC (사용자 시간대 미확인)')+']';
+ return [header,...messages.map(m=>{const t=sentStamp(m,tz);return (t?'[전송 '+t+'] ':'[전송 시각 미상] ')+String(m.content??'');})].join('\n\n');
+}
+export function inputSize(messages,ids,zone){
+ const chosen=new Set(ids);
+ return sourceInput(messages.filter(m=>chosen.has(m.id)),zone).length;
 }
 
 // Original Marinara memory vault 2.1.1 CSS; MIT notice in NOTICE.
@@ -343,7 +399,7 @@ export function createView(root,{send,get,ui}){
   button('+ 범위 추가',()=>{ranges.push(total?{start:Math.max(1,total-19),end:total}:{start:1,end:20});render();},box);
   const count=el('p',undefined,c),cap=el('p',undefined,c,'lv-warning'),list=el('div',undefined,c,'lv-source-list'),picks=[];
   const sync=()=>{
-   const covered=new Set(rangeIds(msgs,ranges,total)),chosen=effectiveSelection(msgs,ranges,ui.sources,total),size=inputSize(msgs,chosen),over=size>MAX_INPUT_CHARS;
+   const covered=new Set(rangeIds(msgs,ranges,total)),chosen=effectiveSelection(msgs,ranges,ui.sources,total),size=inputSize(msgs,chosen,localTimeZone()),over=size>MAX_INPUT_CHARS;
    for(const {m,pick,item} of picks){pick.checked=covered.has(m.id)||ui.sources.has(m.id);pick.disabled=covered.has(m.id);item.classList.toggle('is-selected',pick.checked);}
    count.textContent='메시지 '+chosen.length+'개 선택됨 · 입력 '+size.toLocaleString('en-US')+' / '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자';count.className=over?'lv-warning':'mmc-muted';count.dataset.selected=String(chosen.length);
    cap.textContent=over?'선택한 원문이 한 번에 분석할 수 있는 입력 한도('+MAX_INPUT_CHARS.toLocaleString('en-US')+'자)를 넘었습니다. 범위를 줄이거나 나눠서 분석하세요.':'';cap.hidden=!over;
@@ -376,7 +432,7 @@ export function createView(root,{send,get,ui}){
   }
   const mode=select('분석 모드',[['raw','직접 분석 (raw)'],['quiet','프리셋 적용 (quiet)']],c,ui.mode||'raw');mode.onchange=()=>ui.mode=mode.value;
   const connection=select('모델 연결',[['','연결을 선택하세요'],...ui.connections.map(x=>[x.id,x.name+' · '+(x.model||'(모델 미지정)')])],c,ui.connection||'');connection.onchange=()=>ui.connection=connection.value;
-  const preview=button('입력·모델 미리보기',()=>{const {chosen,over}=sync();if(over){ui.note('입력 한도 초과: 선택을 줄이세요.');return;}send('preview',{ids:chosen,mode:mode.value,connection:connection.value});},c,'mmc-primary');
+  const preview=button('입력·모델 미리보기',()=>{const {chosen,over}=sync();if(over){ui.note('입력 한도 초과: 선택을 줄이세요.');return;}send('preview',{ids:chosen,mode:mode.value,connection:connection.value,timeZone:localTimeZone()});},c,'mmc-primary');
   sync();
   if(ui.preview){const p=card(main,'분석 전 최종 확인');const profile=ui.connections.find(x=>x.id===ui.preview.connection);el('p',ui.preview.mode+' · '+(profile?.name||ui.preview.connection)+' · '+(profile?.model||''),p);const input=el('pre',ui.preview.input,p,'lv-source-text'+(ui.preview.input.length>600?' is-clipped':''));if(ui.preview.input.length>600){const t=button('입력 전체 펼치기',()=>{const now=input.classList.toggle('is-clipped');t.textContent=now?'입력 전체 펼치기':'입력 접기';},p,'mmc-ghost mmc-sm');input.onclick=()=>t.click();}el('p','선택 원문에 비밀이 없는지 직접 확인하세요. 이 버튼을 누르면 선택 모델로 전송합니다.',p,'lv-warning');button('이 입력과 모델로 분석 확인',()=>{send('analyze',{token:ui.preview.token,confirm:true});ui.preview=null;},p,'mmc-primary');}
  }
@@ -435,7 +491,7 @@ export function setup(ctx){
   if(reply.json){ui.transfer=reply.json;ui.tab='settings';}
   if(reply.saved){ui.editor=null;if(p.type==='analyze')ui.tab='overview';}
   if(['reset','restoreBackup'].includes(p.type)){epoch++;pending.clear();ui.messages=[];ui.total=0;ui.sources.clear();ui.expanded.clear();ui.lastPick=null;ui.preview=null;ui.selected.clear();ui.editor=null;ui.limits={};ui.queries={};ui.queueLayer='all';ui.detail=null;}
-  ui.status=reply.saved?'저장 완료':reply.output||'불러오기 완료';
+  ui.status=reply.notice||(reply.saved?'저장 완료':reply.output||'불러오기 완료');
   view.render();
  });
  const offSwitch=ctx.events.on('CHAT_SWITCHED',p=>{
