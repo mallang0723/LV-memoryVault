@@ -28,12 +28,12 @@ function operatorHost({scope='operator',installer=null}={}){
    getJson:async(k,o)=>{const key=rec('userStorage.getJson',o?.userId,{key:k})+'/'+k;if(!storage.has(key))throw Error('missing');return structuredClone(storage.get(key));},
    setJson:async(k,v,o)=>{storage.set(rec('userStorage.setJson',o?.userId,{key:k})+'/'+k,structuredClone(v));},
   },
-  connections:{list:async u=>{rec('connections.list',u);return [{id:'conn',name:'n',model:'m',api_key:'SECRET'}];}},
+  connections:{list:async u=>{rec('connections.list',u);return [{id:'conn',name:'n',model:'m',api_key:'SECRET'}];},get:async(id,u)=>{rec('connections.get',u);return id==='conn'?{id,name:'n',provider:'p',model:'m'}:null;}},
   generate:{raw:async input=>{rec('generate.raw',input.userId);return {content:'[{"layer":"elements","text":"proposal","scope":"public"}]'};}},
  };
  return {api,calls,storage,grants,owners};
 }
-const PER_USER=['chats.getActive','chats.get','userStorage.exists','userStorage.getJson','userStorage.setJson','connections.list','generate.raw'];
+const PER_USER=['chats.getActive','chats.get','userStorage.exists','userStorage.getJson','userStorage.setJson','connections.list','connections.get','generate.raw'];
 const put=(chatId,revision,text)=>({type:'put',confirmPublic:true,chatId,revision,item:{id:'x-'+text,layer:'elements',text,scope:'public'}});
 
 test('operator scope: full flow works and every per-user host call carries the authenticated user',async()=>{

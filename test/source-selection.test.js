@@ -41,7 +41,7 @@ test('input size mirrors the joined preview input',()=>{
  assert.equal(MAX_INPUT_CHARS,60000);
 });
 
-const fakeApi=messages=>{const db=new Map();return {permissions:{has:()=>true},chats:{getActive:async()=>({id:'a'}),get:async(id,u)=>u==='owner'&&id==='a'?{id,metadata:{}}:null},userStorage:{exists:async k=>db.has(k),getJson:async k=>structuredClone(db.get(k)),setJson:async(k,v)=>{db.set(k,structuredClone(v));}},chat:{getMessages:async()=>structuredClone(messages)},generate:{raw:async()=>{throw Error('no model calls in tests');}}};};
+const fakeApi=messages=>{const db=new Map();return {permissions:{has:()=>true},chats:{getActive:async()=>({id:'a'}),get:async(id,u)=>u==='owner'&&id==='a'?{id,metadata:{}}:null},userStorage:{exists:async k=>db.has(k),getJson:async k=>structuredClone(db.get(k)),setJson:async(k,v)=>{db.set(k,structuredClone(v));}},chat:{getMessages:async()=>structuredClone(messages)},connections:{get:async id=>({id,name:'n',provider:'p',model:'m'})},generate:{raw:async()=>{throw Error('no model calls in tests');}}};};
 
 test('sources number messages by full-chat position and exclude hidden ones',async()=>{
  const s=createService(fakeApi([{id:'m1',content:'a',extra:{}},{id:'m2',content:'b',extra:{hidden:true}},{id:'m3',content:'c'}]));

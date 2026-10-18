@@ -8,6 +8,27 @@ export function safe(x){
  if(new TextEncoder().encode(raw).byteLength>2000000) throw Error('크기 제한 2MB');
  return JSON.parse(raw,(k,v)=>{if(['__proto__','constructor','prototype'].includes(k)) throw Error('위험한 키');return v;});
 }
+// Model output for analysis: models may wrap the JSON array in ``` fences, prepend
+// reasoning blocks (<think>…</think>) or add prose around it. Only syntax failures
+// fall through to the next attempt; size and dangerous-key errors still propagate.
+const balancedArray=(s,start)=>{let depth=0,str=false,esc=false;
+ for(let i=start;i<s.length;i++){const c=s[i];
+  if(str){if(esc)esc=false;else if(c==='\\')esc=true;else if(c==='"')str=false;continue;}
+  if(c==='"')str=true;else if(c==='[')depth++;else if(c===']'&&--depth===0)return s.slice(start,i+1);}
+ return null;};
+export function parseCandidates(content){
+ if(Array.isArray(content))return safe(content);
+ if(typeof content!=='string')throw Error('모델 응답 형식 오류: 텍스트 응답이 아닙니다. 다시 시도하세요.');
+ let text=content.replace(/<(think|thinking|reasoning)\b[^>]*>[\s\S]*?<\/\1>/gi,'');
+ const stray=text.search(/<\/(think|thinking|reasoning)>/i);if(stray>=0)text=text.slice(text.indexOf('>',stray)+1);
+ text=text.trim();
+ const fence=text.match(/```[a-zA-Z]*[ \t]*\r?\n?([\s\S]*?)```/);
+ const attempts=[text];if(fence)attempts.push(fence[1].trim());
+ for(const base of [...attempts]){for(let i=base.indexOf('['),n=0;i>=0&&n<20;i=base.indexOf('[',i+1),n++){const b=balancedArray(base,i);if(b)attempts.push(b);}const s=base.indexOf('['),e=base.lastIndexOf(']');if(s>=0&&e>s)attempts.push(base.slice(s,e+1));}
+ for(const a of attempts){let v;try{v=safe(a);}catch(error){if(error instanceof SyntaxError)continue;throw error;}if(Array.isArray(v)&&v.every(x=>x&&typeof x==='object'&&!Array.isArray(x)))return v;}
+ const head=content.trim().slice(0,120);
+ throw Error('모델 응답을 JSON 배열로 해석하지 못했습니다. 다시 시도하거나 다른 모델·모드를 선택하세요. 응답 앞부분: '+(head||'(빈 응답)')+(content.trim().length>120?'…':''));
+}
 export function item(x){
  if(!x||!layers.includes(x.layer)||typeof x.text!=='string'||x.text.length>20000||typeof x.id!=='string'||!x.id||x.id.length>120) throw Error('항목 형식 오류');
  if(!Array.isArray(x.evidence||[])||!Array.isArray(x.knownBy||[])||(x.evidence||[]).some(e=>!e||typeof e.id!=='string'||!Number.isInteger(e.index)||typeof e.fingerprint!=='string'))throw Error('근거 형식 오류');
@@ -308,7 +329,7 @@ export function createView(root,{send,get,ui}){
    picks.push({m,pick,item});
   }
   const mode=select('분석 모드',[['raw','직접 분석 (raw)'],['quiet','프리셋 적용 (quiet)']],c,ui.mode||'raw');mode.onchange=()=>ui.mode=mode.value;
-  const connection=select('모델 연결',[['','연결을 선택하세요'],...ui.connections.map(x=>[x.id,x.name+' · '+x.model])],c,ui.connection||'');connection.onchange=()=>ui.connection=connection.value;
+  const connection=select('모델 연결',[['','연결을 선택하세요'],...ui.connections.map(x=>[x.id,x.name+' · '+(x.model||'(모델 미지정)')])],c,ui.connection||'');connection.onchange=()=>ui.connection=connection.value;
   const preview=button('입력·모델 미리보기',()=>{const {chosen,over}=sync();if(over){ui.note('입력 한도 초과: 선택을 줄이세요.');return;}send('preview',{ids:chosen,mode:mode.value,connection:connection.value});},c,'mmc-primary');
   sync();
   if(ui.preview){const p=card(main,'분석 전 최종 확인');const profile=ui.connections.find(x=>x.id===ui.preview.connection);el('p',ui.preview.mode+' · '+(profile?.name||ui.preview.connection)+' · '+(profile?.model||''),p);el('pre',ui.preview.input,p);el('p','선택 원문에 비밀이 없는지 직접 확인하세요. 이 버튼을 누르면 선택 모델로 전송합니다.',p,'lv-warning');button('이 입력과 모델로 분석 확인',()=>{send('analyze',{token:ui.preview.token,confirm:true});ui.preview=null;},p,'mmc-primary');}
