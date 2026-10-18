@@ -3,11 +3,14 @@ import {publicItems,selectSafeCandidates,injectionText,MAX_INPUT_CHARS,sourceNum
 const tabs=[['overview','개요'],['promises','약속'],['flows','진행 흐름'],['anchors','기억 앵커'],['scenes','장면 기억'],['elements','요소 기억'],['wiki','이야기 위키']];
 const names=Object.fromEntries(tabs);
 const hasLifecycle=layer=>['promises','flows'].includes(layer);
+// Lists render at most PAGE rows at a time; "더 보기" adds another PAGE.
+export const PAGE=20;
+const clip=(s,n=60)=>{s=String(s??'').replace(/\s+/g,' ').trim();return s.length>n?s.slice(0,n-1)+'…':s;};
 const theme=`
 #mmc-root-v1{--mv-bg:var(--lumiverse-bg,#17151e);--mv-paper:var(--lumiverse-bg-elevated,#24212e);--mv-paper-2:var(--lumiverse-input-bg,#2b2738);--mv-sunk:var(--lumiverse-fill-subtle,#302c3e);--mv-ink:var(--lumiverse-text,#eee9f5);--mv-ink-2:var(--lumiverse-text,#ded8e8);--mv-muted:var(--lumiverse-text-muted,#a89fb9);--mv-line:var(--lumiverse-border,#40394f);--mv-line-2:var(--lumiverse-border,#51475f);--mv-accent:var(--lumiverse-primary,#a88bfa);--mv-accent-ink:var(--lumiverse-primary-deep-contrast,#fff);--mv-accent-soft:var(--lumiverse-primary-light,#39304f);--mv-accent-2:var(--lumiverse-primary-text,#c9a0cc);--mv-ok:var(--lumiverse-success,#73b69b);--mv-warn:#d2b275;--mv-danger:var(--lumiverse-danger,#ed8a9b);--mv-wiki-link:var(--mv-accent);--mv-wiki-head:var(--mv-accent);--mv-wiki-head-ink:var(--mv-accent-ink);--mv-wiki-box:var(--mv-paper-2);--mv-wiki-rule:var(--mv-line);color:var(--mv-ink);font-size:13px}
 #mmc-root-v1 .mmc-overlay{position:relative;inset:auto;padding:0;background:none;backdrop-filter:none;display:block}
-#mmc-root-v1 .mmc-shell{display:flex;flex-direction:column;width:100%;height:calc(100dvh - 160px);min-height:300px;max-height:none;border-radius:12px;box-shadow:none;overflow:hidden}
-#mmc-root-v1 .mmc-body{flex:1;overflow:auto;padding:16px;min-width:0;min-height:0;order:2}
+#mmc-root-v1 .mmc-shell{display:flex;flex-direction:column;width:100%;height:auto;min-height:0;max-height:none;border-radius:12px;box-shadow:none;overflow:visible}
+#mmc-root-v1 .mmc-body{flex:none;overflow:visible;padding:12px;min-width:0;min-height:0;order:2}
 #mmc-root-v1 .mmc-bar{flex-wrap:wrap;padding:14px;gap:8px}
 #mmc-root-v1 .mmc-story{max-width:100%;margin:0;overflow:hidden}
 #mmc-root-v1 .mmc-tabs{flex:none;flex-wrap:wrap;overflow:visible;padding:0 8px;gap:2px;order:1;grid-row:auto}
@@ -28,17 +31,26 @@ const theme=`
 #mmc-root-v1 .lv-check input{margin-top:5px;flex:none}
 #mmc-root-v1 .lv-warning{padding:10px 12px;border-left:3px solid var(--mv-warn);background:var(--mv-paper-2);border-radius:6px;color:var(--mv-muted);font-size:12px}
 #mmc-root-v1 .lv-notice{flex:none;order:4;color:var(--mv-muted);font-size:11px;padding:8px 14px;border-top:1px solid var(--mv-line)}
-#mmc-root-v1 .lv-status{flex:none;order:5;padding:10px 14px;background:var(--mv-paper);border-top:1px solid var(--mv-line);font-size:12px;overflow-wrap:anywhere;margin:0}
-#mmc-root-v1 .lv-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
-#mmc-root-v1 .lv-stat{padding:14px;text-align:center}
-#mmc-root-v1 .lv-stat strong{display:block;font-size:25px;color:var(--mv-accent)}
-#mmc-root-v1 .lv-split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:14px;align-items:start}
+#mmc-root-v1 .lv-status{flex:none;order:5;position:sticky;bottom:0;z-index:2;padding:10px 14px;background:var(--mv-paper);border-top:1px solid var(--mv-line);font-size:12px;overflow-wrap:anywhere;margin:0}
+#mmc-root-v1 .lv-chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+#mmc-root-v1 .lv-chips .mmc-chip{min-height:32px;padding:0 10px;font-size:12px;cursor:pointer}
+#mmc-root-v1 .lv-chips .mmc-chip.is-active{border-color:var(--mv-accent);background:var(--mv-accent-soft);color:var(--mv-ink)}
+#mmc-root-v1 .lv-list{display:flex;flex-direction:column;gap:6px;min-width:0}
+#mmc-root-v1 .lv-compact{padding:0}
+#mmc-root-v1 .lv-line{display:flex;align-items:center;min-width:0;min-height:44px}
+#mmc-root-v1 .lv-pick{display:grid;place-items:center;flex:none;width:44px;min-height:44px;cursor:pointer}
+#mmc-root-v1 .lv-pick input{width:20px;height:20px;margin:0}
+#mmc-root-v1 .lv-compact .lv-title{flex:1;min-width:0;min-height:44px;padding:0 12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+#mmc-root-v1 .lv-pick+.lv-title{padding-left:0}
+#mmc-root-v1 .lv-compact>small.lv-meta{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 12px 8px;margin-top:-6px;font-size:11px}
+#mmc-root-v1 .lv-detail{padding:4px 12px 12px;border-top:1px solid var(--mv-line)}
+#mmc-root-v1 .lv-more{width:100%;min-height:44px}
 #mmc-root-v1 .lv-item{padding:12px;border:1px solid var(--mv-line);border-radius:10px;background:var(--mv-paper)}
 #mmc-root-v1 .lv-item.is-selected{border-color:var(--mv-accent);background:var(--mv-accent-soft)}
 #mmc-root-v1 .lv-title{display:block;text-align:left;width:100%;border:0;background:none;color:var(--mv-ink);font-weight:800;font-size:14px;padding:3px 0}
 #mmc-root-v1 .lv-item small{display:block;color:var(--mv-muted);line-height:1.6;overflow-wrap:anywhere}
 #mmc-root-v1 .lv-toolbar{margin-bottom:12px;display:flex;flex-wrap:wrap;gap:6px}
-#mmc-root-v1 .lv-reader{line-height:1.85;min-height:200px}
+#mmc-root-v1 .lv-reader{line-height:1.85}
 #mmc-root-v1 .lv-reader h2{border-bottom:2px solid var(--mv-accent);padding-bottom:12px;margin:4px 0 16px}
 #mmc-root-v1 details{border:1px solid var(--mv-line);border-radius:8px;padding:10px;margin-top:12px}
 #mmc-root-v1 summary{cursor:pointer;color:var(--mv-muted);font-weight:700}
@@ -52,11 +64,11 @@ const theme=`
 #mmc-root-v1 .lv-source-text{white-space:pre-wrap;margin:6px 0 0;cursor:pointer}
 #mmc-root-v1 .lv-source-text.is-clipped{max-height:5.4em;overflow:hidden;-webkit-mask-image:linear-gradient(#000 55%,transparent);mask-image:linear-gradient(#000 55%,transparent)}
 #mmc-root-v1 button:focus-visible,#mmc-root-v1 input:focus-visible,#mmc-root-v1 textarea:focus-visible,#mmc-root-v1 select:focus-visible{outline:2px solid var(--mv-accent);outline-offset:2px}
-@container (max-width:650px){#mmc-root-v1 .mmc-ov-grid,#mmc-root-v1 .lv-split{grid-template-columns:minmax(0,1fr)}#mmc-root-v1 .lv-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@container (max-width:650px){#mmc-root-v1 .mmc-ov-grid{grid-template-columns:minmax(0,1fr)}}
 #mmc-root-v1{container-type:inline-size;max-width:100%;overflow-wrap:anywhere}
 #mmc-root-v1 *{box-sizing:border-box;max-width:100%}
-@media(max-width:700px){#mmc-root-v1 .mmc-tabs{order:3;justify-content:flex-start}#mmc-root-v1 .mmc-brand-text{display:flex}#mmc-root-v1 .mmc-brand-text small{display:none}}
-@media(max-width:360px){#mmc-root-v1 .mmc-body{padding:10px}#mmc-root-v1 .mmc-brand-text b{font-size:16px}#mmc-root-v1 .mmc-tab{padding:0 8px}#mmc-root-v1 .lv-stats{grid-template-columns:repeat(2,minmax(0,1fr))}#mmc-root-v1 .mmc-ov-grid,#mmc-root-v1 .lv-split{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:700px){#mmc-root-v1 .mmc-tabs{order:1;justify-content:flex-start}#mmc-root-v1 .mmc-brand-text{display:flex}#mmc-root-v1 .mmc-brand-text small{display:none}}
+@media(max-width:360px){#mmc-root-v1 .mmc-body{padding:10px}#mmc-root-v1 .mmc-brand-text b{font-size:16px}#mmc-root-v1 .mmc-tab{padding:0 8px}#mmc-root-v1 .mmc-ov-grid{grid-template-columns:minmax(0,1fr)}}
 `;
 export function createView(root,{send,get,ui}){
  const el=(tag,text,parent,cls)=>{const x=document.createElement(tag);if(text!==undefined)x.textContent=text;if(cls)x.className=cls;(parent||root).appendChild(x);return x;};
@@ -66,10 +78,34 @@ export function createView(root,{send,get,ui}){
  const field=(label,tag,parent,value='')=>{const l=el('label',label,parent,'lv-field'),x=el(tag,undefined,l);x.setAttribute('aria-label',label);if(tag!=='select')x.value=value;return x;};
  const check=(label,parent,checked=false)=>{const l=el('label',undefined,parent,'lv-check'),x=el('input',undefined,l);x.type='checkbox';x.checked=checked;x.setAttribute('aria-label',label);el('span',label,l);return x;};
  const select=(label,options,parent,value)=>{const x=field(label,'select',parent);for(const [id,name] of options){const o=el('option',name,x);o.value=id;if(id===value)o.setAttribute('selected','');}return x;};
- const go=tab=>{ui.tab=tab;ui.editor=null;ui.filter='all';ui.detail=null;render();};
- const title=x=>x.title||x.text.split('\n')[0].slice(0,60)||'제목 없는 기억';
+ const go=tab=>{ui.tab=tab;ui.editor=null;ui.filter='all';ui.detail=null;ui.limits={};ui.queries={};render();};
+ const title=x=>clip(x.title||x.text.split('\n')[0])||'제목 없는 기억';
+ const matches=(x,q)=>!q||(title(x)+' '+x.text).toLowerCase().includes(q.toLowerCase());
  const explain=x=>[hasLifecycle(x.layer)?(x.status==='completed'?'완료':x.status==='cancelled'?'취소':'진행 중'):['completed','cancelled'].includes(x.status)?'주입 제외 (이전 상태)':'',x.scope==='public'?'공개':x.scope==='secret'?'비밀':x.scope==='character'?'인물 제한':'범위 확인 필요',x.hold?'보류':'',x.branchHold?'분기 보류':'',x.importedScope?'가져온 범위 보류':'',x.review?'근거 재검토':'',x.locked?'잠금':''].filter(Boolean).join(' · ');
  const openEditor=x=>{ui.editor={...(x||{id:crypto.randomUUID(),layer:ui.tab==='overview'?'promises':ui.tab,text:'',title:'',scope:'unknown',status:'active',source:'수동',evidence:[],knownBy:[]})};render();};
+ // One page of rows plus a "더 보기" button; refills in place so search focus and scroll survive.
+ function paged(parent,rows,key,draw,reveal){
+  const list=el('div',undefined,parent,'lv-list');list.dataset.list=key;
+  const fill=()=>{
+   list.replaceChildren();let limit=ui.limits[key]||PAGE;
+   const at=reveal?rows.findIndex(reveal):-1;if(at>=limit)limit=ui.limits[key]=Math.ceil((at+1)/PAGE)*PAGE;
+   for(const x of rows.slice(0,limit))draw(x,list);
+   const rest=rows.length-limit;
+   if(rest>0){const more=button(`더 보기 (+${Math.min(PAGE,rest)}) · ${limit}/${rows.length}개 표시 중`,()=>{ui.limits[key]=limit+PAGE;fill();},list,'lv-more');more.dataset.more=key;}
+  };
+  fill();return list;
+ }
+ function searchable(parent,key,label,rows,draw,empty){
+  const search=field(label,'input',parent,ui.queries[key]||'');search.type='search';
+  const host=el('div',undefined,parent);
+  const refresh=()=>{host.replaceChildren();const q=ui.queries[key]||'',hits=rows.filter(x=>matches(x,q));
+   if(!hits.length){el('div',q?'검색 결과가 없어요.':empty,host,'mmc-empty mmc-card');return;}
+   if(q)el('small','검색 결과 '+hits.length+'개',host,'mmc-muted');
+   paged(host,hits,key,draw,x=>ui.detail===key+':'+x.id);
+  };
+  search.oninput=()=>{ui.queries[key]=search.value;ui.limits[key]=PAGE;refresh();};
+  refresh();
+ }
  function disclosure(parent){return check('공개 범위 확대 확인',parent);}
  function bulk(parent,state){
   const actions=row(parent);
@@ -82,37 +118,46 @@ export function createView(root,{send,get,ui}){
   el('small','선택 '+ui.selected.size+' · 후보 '+state.candidates.length,parent,'mmc-muted');
  }
  function overview(main,state){
+  const safe=publicItems(state),review=state.items.filter(x=>x.review).length,held=state.items.filter(x=>x.hold||x.branchHold||x.importedScope).length;
+  const chips=el('div',undefined,main,'lv-chips');chips.dataset.summary='true';
+  for(const text of ['주입 '+safe.length,'후보 '+state.candidates.length,'재검토 '+review,'보류 '+held])el('span',text,chips,'mmc-chip');
+  for(const [layer,name] of tabs.slice(1))button(name+' '+state.items.filter(x=>x.layer===layer).length,()=>go(layer),chips,'mmc-chip');
   const grid=el('div',undefined,main,'mmc-ov-grid');
-  const injection=card(grid,'RP에 들어갈 공개 기억');
-  const safe=publicItems(state);el('strong',safe.length+'개',injection);el('p','승인된 공개 항목만 생성 직전에 직접 주입합니다. 매 생성 시 근거를 다시 확인합니다.',injection);
-  button('주입 대상 보기',()=>{ui.previewInjection=!ui.previewInjection;render();},injection);
-  if(ui.previewInjection){el('p','아래는 저장 상태 기준 후보입니다. 실제 생성에서는 원문 재검토·분기 검증 뒤 줄어들 수 있습니다.',injection,'lv-warning');for(const x of safe)el('pre',names[x.layer]+': '+x.text,injection);}
+  const injection=card(grid,'RP에 들어갈 공개 기억 '+safe.length+'개');
+  el('p','답변할 때 승인한 공개 기억만 프롬프트에 넣습니다. 넣기 전에 매번 원문 근거를 다시 확인합니다.',injection);
+  button(ui.previewInjection?'주입 대상 접기':'주입 대상 보기',()=>{ui.previewInjection=!ui.previewInjection;render();},injection);
+  if(ui.previewInjection){el('p','저장 상태 기준 후보입니다. 실제 답변에서는 원문 재검토·분기 검증 뒤 줄어들 수 있습니다.',injection,'lv-warning');paged(injection,safe,'inject',(x,list)=>itemRow(x,list,state,{slot:'inject',pick:false,layer:true}),x=>ui.detail==='inject:'+x.id);}
   const inbox=card(grid,'검토 대기');
-  el('p',`새 후보 ${state.candidates.length}개 · 근거 재검토 ${state.items.filter(x=>x.review).length}개 · 보류 ${state.items.filter(x=>x.hold||x.branchHold||x.importedScope).length}개`,inbox);
+  el('p',`새 후보 ${state.candidates.length}개 · 근거 재검토 ${review}개 · 보류 ${held}개`,inbox);
   bulk(inbox,state);
-  for(const x of state.candidates.slice(0,8))itemRow(x,inbox,true);
-  const stats=el('div',undefined,main,'lv-stats');
-  for(const [layer,name] of tabs.filter(([id])=>['promises','anchors','elements','wiki'].includes(id))){const c=el('div',undefined,stats,'mmc-card lv-stat');el('strong',state.items.filter(x=>x.layer===layer).length,c);button(name,()=>go(layer),c,'mmc-ghost');}
+  const layers=el('div',undefined,inbox,'lv-chips'),pick=ui.queueLayer||'all';
+  for(const [id,name] of [['all','전체'],...tabs.slice(1)]){const n=id==='all'?state.candidates.length:state.candidates.filter(x=>x.layer===id).length;if(id!=='all'&&!n)continue;const b=button(name+' '+n,()=>{ui.queueLayer=id;ui.limits.queue=PAGE;render();},layers,'mmc-chip'+(pick===id?' is-active':''));b.dataset.layer=id;}
+  searchable(inbox,'queue','후보 검색',state.candidates.filter(x=>pick==='all'||x.layer===pick),(x,list)=>itemRow(x,list,state,{slot:'queue',candidate:true,layer:true}),'검토할 후보가 없어요.');
   const recent=card(main,'최근 변화');
-  for(const x of [...state.items].sort((a,b)=>(b.lastChangedAt||0)-(a.lastChangedAt||0)).slice(0,4)){button(title(x),()=>{go(x.layer);ui.detail=x.id;render();},recent,'mmc-ghost');el('pre',x.text,recent);}
+  const changed=[...state.items].sort((a,b)=>(b.lastChangedAt||0)-(a.lastChangedAt||0)).slice(0,5);
+  const list=el('div',undefined,recent,'lv-list');for(const x of changed)itemRow(x,list,state,{slot:'recent',pick:false,layer:true});
   if(!state.items.length)el('p','아직 보관된 기억이 없어요. 종류별 탭에서 직접 추가하거나 원문을 선택해 후보를 만들어 보세요.',recent,'mmc-muted');
  }
- function itemRow(x,parent,candidate=false){
-  const article=el('article',undefined,parent,'lv-item'+(ui.detail===x.id?' is-selected':''));
-  const r=row(article),pick=check('선택: '+title(x),r,ui.selected.has(x.id));pick.onchange=()=>pick.checked?ui.selected.add(x.id):ui.selected.delete(x.id);
-  button(title(x),()=>{ui.detail=x.id;if(ui.tab==='overview')ui.tab=x.layer;render();},article,'lv-title');
-  el('small',explain(x)+(candidate?' · 승인 대기':''),article);el('small',x.text.slice(0,150),article);
+ // Compact row: one clipped title line + one meta line. Only the tapped row renders its detail.
+ function itemRow(x,parent,state,{slot='list',candidate=false,pick=true,layer=false}={}){
+  const key=slot+':'+x.id,open=ui.detail===key;
+  const article=el('article',undefined,parent,'lv-item lv-compact'+(open?' is-selected':''));article.dataset.id=x.id;
+  const line=el('div',undefined,article,'lv-line');
+  if(pick){const l=el('label',undefined,line,'lv-pick'),c=el('input',undefined,l);c.type='checkbox';c.checked=ui.selected.has(x.id);c.setAttribute('aria-label','선택: '+title(x));c.onchange=()=>c.checked?ui.selected.add(x.id):ui.selected.delete(x.id);}
+  const t=button(title(x),()=>{ui.detail=open?null:key;render();},line,'lv-title');t.setAttribute('aria-expanded',String(open));
+  el('small',[layer?names[x.layer]:'',explain(x),candidate?'승인 대기':''].filter(Boolean).join(' · '),article,'lv-meta');
+  if(open)detail(x,article,state);
+  return article;
  }
  function detail(x,parent,state){
-  const c=card(parent,ui.tab==='wiki'?'이야기 위키 문서':'기억 상세');
-  if(!x){el('p','목록에서 기억을 골라 주세요.',c,'mmc-muted');return;}
-  const reader=el('div',undefined,c,'lv-reader');el('h2',title(x),reader);el('p',explain(x),reader,'mmc-muted');el('pre',x.text,reader);
+  const c=el('div',undefined,parent,'lv-detail');
+  const reader=el('div',undefined,c,'lv-reader');el('pre',x.text,reader);
   if(!state.candidates.includes(x)){
    if(hasLifecycle(x.layer)){
     const statuses=row(reader),confirm=disclosure(reader);
     for(const [value,label] of [['active','진행 중으로'],['completed','완료로'],['cancelled','취소로']])button(label,()=>send('put',{item:{...x,status:value},confirmPublic:confirm.checked}),statuses,'mmc-sm');
    }
-   el('h3','RP에 이렇게 들어가요',reader);el('pre',publicItems({items:[x]}).length?injectionText([x]):'현재는 주입하지 않는 기억입니다.',reader);el('small','실제 생성에서는 원문·분기를 다시 검증합니다.',reader,'mmc-muted');
+   const how=el('details',undefined,reader);el('summary','RP에 이렇게 들어가요',how);el('pre',publicItems({items:[x]}).length?injectionText([x]):'현재는 주입하지 않는 기억입니다.',how);el('small','실제 답변에서는 원문·분기를 다시 검증합니다.',how,'mmc-muted');
   }
   if(x.targetId){el('h3','변경 전 → 변경 후',reader);el('pre',x.baseText||'(새 문서)',reader);el('pre',x.text,reader);}
   const actions=row(c);button('편집',()=>openEditor(x),actions);
@@ -124,18 +169,12 @@ export function createView(root,{send,get,ui}){
   if(x.knownBy?.length)el('p','인물 제한이 있어 주입하지 않습니다. 인물 매핑은 아직 지원하지 않습니다.',evidence,'lv-warning');
  }
  function collection(main,state){
-  const split=el('div',undefined,main,'lv-split'),left=card(split),details=el('div',undefined,split);
-  const filters=el('div',undefined,left,'mmc-seg');for(const [id,name] of hasLifecycle(ui.tab)?[['active','진행 중'],['hold','보류'],['done','완료'],['all','전체']]:[['hold','보류'],['all','전체']])button(name,()=>{ui.filter=id;render();},filters,'mmc-filter'+(ui.filter===id?' is-active':''));
-  const search=field('기억 검색','input',left,ui.search||'');search.oninput=()=>{ui.search=search.value;refreshList();};
-  const list=el('div',undefined,left,'lv-stack');
-  const rows=[...state.items,...state.candidates].filter(x=>x.layer===ui.tab);
-  function refreshList(){
-   list.replaceChildren();const filtered=rows.filter(x=>(!ui.search||(title(x)+' '+x.text).includes(ui.search))&&(ui.filter==='all'||ui.filter==='hold'&&(x.hold||x.branchHold||x.importedScope)||ui.filter==='done'&&['completed','cancelled'].includes(x.status)||ui.filter==='active'&&!x.hold&&x.status==='active'));
-   if(!filtered.length)el('div','아직 이 종류의 기억이 없어요. 직접 추가하거나 원문에서 정리해 보세요.',list,'mmc-empty mmc-card');
-   for(const x of filtered)itemRow(x,list,state.candidates.includes(x));
-  }
-  refreshList();detail(rows.find(x=>x.id===ui.detail)||rows[0],details,state);
-  const bar=el('footer',undefined,left,'lv-toolbar');bar.style.marginTop='14px';button('직접 추가',()=>openEditor(),bar,'mmc-primary');button('원문에서 정리',()=>go('analysis'),bar);button('검토 대기',()=>go('overview'),bar);
+  const left=card(main);
+  const bar=el('div',undefined,left,'lv-toolbar');button('직접 추가',()=>openEditor(),bar,'mmc-primary');button('원문에서 정리',()=>go('analysis'),bar);button('검토 대기',()=>go('overview'),bar);
+  const filters=el('div',undefined,left,'mmc-seg');for(const [id,name] of hasLifecycle(ui.tab)?[['active','진행 중'],['hold','보류'],['done','완료'],['all','전체']]:[['hold','보류'],['all','전체']])button(name,()=>{ui.filter=id;ui.limits.list=PAGE;render();},filters,'mmc-filter'+(ui.filter===id?' is-active':''));
+  const rows=[...state.items,...state.candidates].filter(x=>x.layer===ui.tab&&(ui.filter==='all'||ui.filter==='hold'&&(x.hold||x.branchHold||x.importedScope)||ui.filter==='done'&&['completed','cancelled'].includes(x.status)||ui.filter==='active'&&!x.hold&&x.status==='active'));
+  el('small',names[ui.tab]+' '+rows.length+'개 · 눌러서 펼치기',left,'mmc-muted');
+  searchable(left,'list','기억 검색',rows,(x,list)=>itemRow(x,list,state,{candidate:state.candidates.includes(x)}),'아직 이 종류의 기억이 없어요. 직접 추가하거나 원문에서 정리해 보세요.');
   if(ui.tab==='anchors')el('p','항상 기억할 공개 앵커만 지원합니다. 원작의 키워드 호출·주입 예산은 아직 지원하지 않습니다.',main,'lv-warning');
   if(ui.tab==='scenes'||ui.tab==='flows'||ui.tab==='elements'||ui.tab==='wiki')el('p','이 버전은 텍스트 중심 편집입니다. 원작의 구조화 장면·흐름별 이력·요소 검색 조건·위키 자동 갱신은 아직 지원하지 않습니다.',main,'lv-warning');
  }
@@ -188,7 +227,14 @@ export function createView(root,{send,get,ui}){
    preview.disabled=over;
    return {chosen,over};
   };
+  // Only the latest page of messages is rendered; selection state lives in ui.sources/ranges, not the DOM.
+  const shown=Math.min(msgs.length,ui.limits.sources||PAGE),first=msgs.length-shown;
+  if(first>0){
+   el('small','최근 '+shown+'개만 표시 중입니다. 전체 선택·최근 N개·범위 선택은 보이지 않는 대화에도 적용됩니다.',list,'mmc-muted');
+   const more=button(`이전 대화 더 보기 (+${Math.min(PAGE,first)}) · ${shown}/${msgs.length}개 표시 중`,()=>{ui.limits.sources=shown+PAGE;render();},list,'lv-more');more.dataset.more='sources';
+  }
   for(const [i,m] of msgs.entries()){
+   if(i<first)continue;
    const n=sourceNumber(m,i),item=el('div',undefined,list,'lv-item lv-source'),l=el('label',undefined,item,'lv-check'),pick=el('input',undefined,l);
    pick.type='checkbox';pick.setAttribute('aria-label','대화 '+n+' 선택');el('b','대화 '+n,l);
    pick.onclick=event=>{
@@ -209,7 +255,7 @@ export function createView(root,{send,get,ui}){
   const connection=select('모델 연결',[['','연결을 선택하세요'],...ui.connections.map(x=>[x.id,x.name+' · '+(x.model||'(모델 미지정)')])],c,ui.connection||'');connection.onchange=()=>ui.connection=connection.value;
   const preview=button('입력·모델 미리보기',()=>{const {chosen,over}=sync();if(over){ui.note('입력 한도 초과: 선택을 줄이세요.');return;}send('preview',{ids:chosen,mode:mode.value,connection:connection.value});},c,'mmc-primary');
   sync();
-  if(ui.preview){const p=card(main,'분석 전 최종 확인');const profile=ui.connections.find(x=>x.id===ui.preview.connection);el('p',ui.preview.mode+' · '+(profile?.name||ui.preview.connection)+' · '+(profile?.model||''),p);el('pre',ui.preview.input,p);el('p','선택 원문에 비밀이 없는지 직접 확인하세요. 이 버튼을 누르면 선택 모델로 전송합니다.',p,'lv-warning');button('이 입력과 모델로 분석 확인',()=>{send('analyze',{token:ui.preview.token,confirm:true});ui.preview=null;},p,'mmc-primary');}
+  if(ui.preview){const p=card(main,'분석 전 최종 확인');const profile=ui.connections.find(x=>x.id===ui.preview.connection);el('p',ui.preview.mode+' · '+(profile?.name||ui.preview.connection)+' · '+(profile?.model||''),p);const input=el('pre',ui.preview.input,p,'lv-source-text'+(ui.preview.input.length>600?' is-clipped':''));if(ui.preview.input.length>600){const t=button('입력 전체 펼치기',()=>{const now=input.classList.toggle('is-clipped');t.textContent=now?'입력 전체 펼치기':'입력 접기';},p,'mmc-ghost mmc-sm');input.onclick=()=>t.click();}el('p','선택 원문에 비밀이 없는지 직접 확인하세요. 이 버튼을 누르면 선택 모델로 전송합니다.',p,'lv-warning');button('이 입력과 모델로 분석 확인',()=>{send('analyze',{token:ui.preview.token,confirm:true});ui.preview=null;},p,'mmc-primary');}
  }
  function settings(main,state){
   const c=card(main,'설정 · 데이터 관리');const used=new TextEncoder().encode(JSON.stringify(state)).byteLength;
@@ -224,7 +270,8 @@ export function createView(root,{send,get,ui}){
   el('p','영구 책을 만들지 않습니다. 과거 수동 내보내기 책은 호스트에서 직접 연결 해제·삭제하세요. 확장 비활성화는 데이터를 남깁니다. 제거 전 JSON을 내보내세요.',info);
  }
  function render(){
-  const {state,chatId,recovery}=get(),scroll=root.querySelector('.mmc-body')?.scrollTop||0;root.replaceChildren();root.className='memory-cabinet';root.id='mmc-root-v1';el('style',vaultStyle+'\n'+theme);
+  // The drawer scrolls the whole panel; rebuild synchronously with no layout reads so its scroll position is kept.
+  const {state,chatId,recovery}=get();root.replaceChildren();root.className='memory-cabinet';root.id='mmc-root-v1';el('style',vaultStyle+'\n'+theme);
   const overlay=el('div',undefined,root,'mmc-overlay'),shell=el('section',undefined,overlay,'mmc-shell');
   const bar=el('header',undefined,shell,'mmc-bar'),brand=el('div',undefined,bar,'mmc-brand');el('span','▤',brand,'mmc-brand-mark');const bt=el('span',undefined,brand,'mmc-brand-text');el('b','기억 보관함',bt);el('small','MEMORY VAULT · 0.2 BETA',bt);
   el('span',chatId?'현재 이야기 · 채팅별 보관함':'채팅을 여세요',bar,'mmc-story');
@@ -238,7 +285,6 @@ export function createView(root,{send,get,ui}){
    if(used>=1800000)el('p','용량 한도 근처: 오래된 되돌리기 이력은 저장 시 자동 정리됩니다. 현재 기억·후보 자체가 가득 차면 JSON 내보내기 후 불필요한 항목을 삭제하거나 텍스트를 줄이세요. 보류는 주입만 막습니다.',main,'lv-warning');
    if(ui.editor)editor(main,state);else if(ui.tab==='overview')overview(main,state);else if(ui.tab==='settings')settings(main,state);else if(ui.tab==='analysis')analysis(main,chatId);else collection(main,state);
   }else if(!recovery)el('p','채팅을 열고 새로고침해 주세요.',main,'mmc-empty');
-  main.scrollTop=scroll;
   el('div','루미버스용 · 비공식. Lumiverse 팀이 제작·승인·보증·지원하는 확장이 아닙니다.',shell,'lv-notice');const status=el('p',ui.status||'',shell,'lv-status');status.setAttribute('role','status');
  }
  return {render};

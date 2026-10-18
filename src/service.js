@@ -53,7 +53,7 @@ export function createService(api){
      if(parent){let pm=[],cm=[];try{gate('chat_mutation');if(await api.chats.get(parentId,user))pm=await api.chat.getMessages(parentId);cm=await api.chat.getMessages(chatId);}catch{}state=await inherit(parent,pm,cm,chat.metadata.branch_at_message,chat.created_at);safe(state);try{await api.userStorage.setJson(path,state,{userId:user});}catch{const actual=await read(path,user);if(JSON.stringify(actual)!==JSON.stringify(state))throw Error('분기 초기 저장 미확정');}}
     }
    }
-   const response=()=>({chatId,state,output:'생성 시 승인된 공개 기억만 직접 주입'});
+   const response=()=>({chatId,state,output:'답변할 때 승인한 공개 기억만 프롬프트에 넣습니다'});
    if(r.type==='load')return response();
    if(r.type==='connections'){gate('generation');return {...response(),connections:(await api.connections.list(user)).map(x=>({id:x.id,name:x.name,model:x.model}))};}
    if(r.type==='export')return {...response(),json:JSON.stringify({version:1,items:state.items,candidates:state.candidates},null,2)};

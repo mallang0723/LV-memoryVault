@@ -27,6 +27,8 @@ test('item detail shows text not executable HTML and edit preserves restrictions
 test('only promises and flows have lifecycle filters, actions and editor state',()=>{
  for(const [layer,name] of [['promises','약속'],['flows','진행 흐름'],['anchors','기억 앵커'],['scenes','장면 기억'],['elements','요소 기억'],['wiki','이야기 위키']]){
   const {root,cleanup}=mount(layer);click(root,name);
+  // Lists are compact by default: nothing is expanded until the row is tapped.
+  assert.equal(root.textContent.includes('진행 중으로'),false,layer);click(root,'새벽의 약속');
   const lifecycle=['promises','flows'].includes(layer);
   assert.equal(root.textContent.includes('진행 중으로'),lifecycle,layer);
   assert.equal(root.textContent.includes('완료로'),lifecycle,layer);
@@ -35,7 +37,7 @@ test('only promises and flows have lifecycle filters, actions and editor state',
  }
 });
 test('legacy excluded wiki is identified and not silently reactivated on edit',()=>{
- const {root,sent,cleanup}=mount('wiki','completed');click(root,'이야기 위키');assert.match(root.textContent,/주입 제외/);click(root,'편집');
+ const {root,sent,cleanup}=mount('wiki','completed');click(root,'이야기 위키');assert.match(root.textContent,/주입 제외/);click(root,'새벽의 약속');click(root,'편집');
  click(root,'항목 저장');assert.equal(sent.at(-1).item.status,'completed');
  cleanup();
 });
