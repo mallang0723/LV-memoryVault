@@ -14,12 +14,13 @@
 
 ## 설치
 
-1. Lumiverse 확장 관리에서 GitHub 주소로 설치합니다: `https://github.com/mallang0723/LV-memoryVault`.
-2. **사용자 범위(user scope)**로 설치하세요. 운영자 범위(operator) 설치는 지원하지 않습니다.
-3. `chats`, `chat_mutation`, `generation`, `interceptor` 권한을 확인하고 확장을 활성화합니다.
-4. 채팅을 열고 서랍의 **기억** 탭을 누릅니다. 빌드된 실행물이 포함되어 있어 별도 빌드가 필요하지 않습니다.
+1. Lumiverse 확장 패널(Extensions)에서 GitHub 주소로 설치합니다: `https://github.com/mallang0723/LV-memoryVault`. 일반 패널 설치(운영자 범위)와 사용자 범위 설치 모두 지원합니다.
+2. `chats`, `chat_mutation`, `generation`, `interceptor` 권한을 확인하고 확장을 활성화합니다.
+3. 채팅을 열고 서랍의 **기억** 탭을 누릅니다. 빌드된 실행물이 포함되어 있어 별도 빌드가 필요하지 않습니다.
 
-이식 대상으로 확인한 버전은 Lumiverse 1.2.5입니다. 사용자 범위 설치와 Spindle 생성 interceptor API가 필요합니다. 앞으로의 호스트 업데이트 호환성은 보장하지 않습니다.
+여러 사용자가 있는 서버에서도 기억은 사용자별로 분리됩니다. 사용자는 Lumiverse가 인증한 세션(확장 메시지 라우팅과 생성 문맥)에서만 정하며, 요청 본문에 담긴 값은 쓰지 않습니다. 모든 저장·조회·생성 요청은 그 사용자로 호스트에 전달되고, 자기 소유가 아닌 채팅은 열 수 없습니다.
+
+이식 대상으로 확인한 버전은 Lumiverse 1.2.5입니다. Spindle 생성 interceptor API가 필요합니다. 앞으로의 호스트 업데이트 호환성은 보장하지 않습니다.
 
 ## 사용 순서
 

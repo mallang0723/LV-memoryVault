@@ -29,11 +29,11 @@ test('explicit model confirmation and hidden sources; no memory secrets in provi
  assert.equal(result.state.items.length,1);assert.equal(result.state.candidates.length,1);assert.equal(result.state.candidates[0].scope,'unknown');assert.ok(!JSON.stringify(captured).includes('NEVER_SEND'));assert.ok(!JSON.stringify(captured).includes('secret'));
  f.grants.delete('chats');await assert.rejects(()=>s.run({type:'load',chatId:'a'},'owner'));
 });
-test('storage failure preserves prior revision; operator and missing trusted user rejected',async()=>{
+test('storage failure preserves prior revision; missing trusted user rejected; operator host accepted',async()=>{
  const f=fake(),s=createService(f.a);const r={chatId:'a',type:'put',confirmPublic:true,revision:0,item:{id:'x',layer:'elements',text:'x'}};
  await assert.rejects(()=>s.run({...r,userId:'owner'},undefined));
  f.a.userStorage.setJson=async()=>{throw Error('disk unavailable');};await assert.rejects(()=>s.run(r,'owner'));assert.equal((await s.run({type:'load',chatId:'a'},'owner')).state.revision,0);
- f.a.chats.getActive=async()=>{throw Error('userId required for operator');};await assert.rejects(()=>s.run(r,'owner'),/사용자 범위/);
+ f.a.chats.getActive=async u=>{if(!u)throw Error('userId is required for operator-scoped extensions');return {id:'a'};};assert.equal((await s.run({type:'load'},'owner')).chatId,'a');
 });
 test('inherited public book negative control: disabled extension cannot intercept host copy',()=>{
  const parent={metadata:{chat_world_book_ids:['parent-public-book']}};
