@@ -7,6 +7,9 @@ test('wiki model candidates cannot auto-select restricted audience fields',async
 });
 export function fake(){const db=new Map(), grants=new Set(['chats','chat_mutation','generation','world_books']);let calls=0;
  const a={permissions:{has:p=>grants.has(p)},chats:{getActive:async()=>({id:'a'}),get:async(id,u)=>u==='owner'&&['a','b'].includes(id)?{id,metadata:{}}:null},userStorage:{exists:async k=>db.has(k),getJson:async k=>structuredClone(db.get(k)),setJson:async(k,v)=>{db.set(k,structuredClone(v));}},chat:{getMessages:async()=>[{id:'m',content:'public',extra:{}},{id:'hidden',content:'secret',extra:{hidden:true}}]},connections:{get:async id=>({id,name:'n',provider:'fixture-provider',model:'fixture-model'})},generate:{raw:async()=>{calls++;return {content:'[{"layer":"elements","text":"candidate","scope":"public"}]'};}}};return {a,db,grants,count:()=>calls};}
+// Host-shaped interceptor input: chat turns the host assembled from the real
+// generation chat, stamped with their source message IDs (Lumiverse 1.2.5).
+export const history=(...ids)=>ids.map((id,i)=>({role:'user',content:'turn '+i,__isChatHistory:true,sourceMessageId:id,sourceIndexInChat:i}));
 test('malformed stored revision cannot accept revision-free mutation',async()=>{
  const f=fake();f.db.set('chats/a/data.json',{version:1,items:[],candidates:[],undo:[]});
  await assert.rejects(()=>createService(f.a).run({type:'put',confirmPublic:true,chatId:'a',item:{id:'x',layer:'elements',text:'x'}},'owner'),/저장 형식/);

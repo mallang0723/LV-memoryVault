@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createService} from '../src/service.js';
-import {fake} from './backend.test.js';
+import {fake,history} from './backend.test.js';
 import {fingerprint,review,empty,apply} from '../src/core.js';
 import {createHash} from 'node:crypto';
 test('public proposal approval needs separate disclosure confirmation',()=>{
@@ -48,7 +48,7 @@ test('SHA256 fingerprints bound long-source storage and legacy evidence still ma
 });
 test('generation retains original messages on permission, corrupt storage and lookup failures',async()=>{
  for(const failure of ['interceptor','chat_mutation','chats','storage','active','parent','context','abort']){
-  const f=fake();f.grants.add('interceptor');const s=createService(f.a),messages=[{role:'user',content:'ORIGINAL'}];
+  const f=fake();f.grants.add('interceptor');const s=createService(f.a),messages=[...history('m'),{role:'user',content:'ORIGINAL'}];
   if(f.grants.has(failure))f.grants.delete(failure);
   if(failure==='storage')f.db.set('chats/a/data.json',{broken:true});
   if(failure==='active')f.a.chats.getActive=async()=>{throw Error('lookup');};

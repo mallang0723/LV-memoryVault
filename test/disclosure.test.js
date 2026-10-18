@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {empty,apply,publicItems} from '../src/core.js';
 import {createService} from '../src/service.js';
-import {fake} from './backend.test.js';
+import {fake,history} from './backend.test.js';
 const value={id:'x',layer:'elements',text:'PRIVATE',scope:'secret'};
 test('promotion and removal of restrictions need dedicated confirmation',()=>{
  for(const type of ['put','editCandidate']){
@@ -49,9 +49,9 @@ test('interceptor uses actual chat and withholds other users and revoked permiss
  const f=fake();f.grants.add('interceptor');const s=createService(f.a);
  await s.run({type:'put',confirmPublic:true,chatId:'a',revision:0,item:{...value,scope:'public'}},'owner');
  assert.equal(typeof s.intercept,'function');
- assert.match(JSON.stringify(await s.intercept([],{chatId:'a',userId:'owner'})),/PRIVATE/);
- assert.doesNotMatch(JSON.stringify(await s.intercept([],{chatId:'b',userId:'owner'})),/PRIVATE/);
- assert.deepEqual(await s.intercept([],{chatId:'a',userId:'attacker'}),{messages:[]});
- f.grants.delete('interceptor');assert.deepEqual(await s.intercept([],{chatId:'a',userId:'owner'}),{messages:[]});
+ assert.match(JSON.stringify(await s.intercept(history('m'),{chatId:'a',userId:'owner'})),/PRIVATE/);
+ assert.doesNotMatch(JSON.stringify(await s.intercept(history('m'),{chatId:'b',userId:'owner'})),/PRIVATE/);
+ assert.deepEqual(await s.intercept(history('m'),{chatId:'a',userId:'attacker'}),{messages:history('m')});
+ f.grants.delete('interceptor');assert.deepEqual(await s.intercept(history('m'),{chatId:'a',userId:'owner'}),{messages:history('m')});
  await assert.rejects(()=>s.run({type:'sync',chatId:'a',revision:1},'owner'));
 });

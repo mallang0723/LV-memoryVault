@@ -1,5 +1,10 @@
 import {empty,apply,clone,safe,parseCandidates,normalizeCandidates,skippedNotice,validate,inherit,review,fingerprint,publicItems,injectionText,MAX_INPUT_CHARS,sourceInput} from './core.js';
 const validId=x=>typeof x==='string'&&/^[a-zA-Z0-9_-]{1,120}$/.test(x);
+// Lumiverse user IDs are URL-safe and up to 128 characters (host auth provisioning).
+const validUser=x=>typeof x==='string'&&/^[a-zA-Z0-9_-]{1,128}$/.test(x);
+// Prompt messages the host assembled from stored chat turns carry their source
+// message ID. Prior interceptors cannot add IDs the host did not stamp.
+const historyIds=messages=>Array.isArray(messages)?messages.filter(m=>m?.__isChatHistory===true&&typeof m.sourceMessageId==='string').map(m=>m.sourceMessageId):[];
 const bytes=x=>new TextEncoder().encode(JSON.stringify(x)).byteLength;
 // Analysis instruction (raw and quiet). Source messages arrive prefixed by sourceInput().
 export const ANALYSIS_PROMPT=[
@@ -34,7 +39,7 @@ export function createService(api){
   return validate(value);
  };
  async function run(request,user){
-  if(!validId(user))throw Error('인증된 사용자 문맥 없음');
+  if(!validUser(user))throw Error('인증된 사용자 문맥 없음');
   const r=safe(request);gate('chats');
   // `user` is the host-authenticated identity (frontend message routing or
   // interceptor context), never a payload field. Every host call below passes it,
@@ -130,21 +135,31 @@ export function createService(api){
  async function intercept(messages,context){
   try{
   gate('interceptor');gate('chat_mutation');
-  if(!validId(context?.chatId)||!validId(context?.userId))throw Error('인증된 생성 문맥 필요');
+  if(!validId(context?.chatId)||!validUser(context?.userId))throw Error('인증된 생성 문맥 필요');
   context.signal?.throwIfAborted();
-  const {state}=await run({type:'load',chatId:context.chatId},context.userId);
+  // context.userId/chatId can be replaced by a context_handler before interceptors
+  // run, so they are only claims. The host assembles chat history from the real
+  // generation chat and stamps each turn's source message ID; the claimed chat must
+  // contain every stamped turn, and the claimed user must own that chat. Without a
+  // stamped turn the generation cannot be tied to a chat, so nothing is injected.
+  const stamped=historyIds(messages);
+  if(!stamped.length)throw Error('생성 채팅 확인 불가');
   const chat=await api.chats.get(context.chatId,context.userId);
   if(!chat)throw Error('채팅 소유권 확인 실패');
+  const current=await api.chat.getMessages(context.chatId),own=new Set(current.map(m=>m?.id));
+  if(!stamped.every(id=>own.has(id)))throw Error('생성 채팅 불일치');
+  context.signal?.throwIfAborted();
+  const {state}=await run({type:'load',chatId:context.chatId},context.userId);
   if(validId(chat.metadata?.branched_from)){
    const parent=await api.chats.get(chat.metadata.branched_from,context.userId);
-   const pm=parent?await api.chat.getMessages(parent.id):[],cm=await api.chat.getMessages(chat.id);
+   const pm=parent?await api.chat.getMessages(parent.id):[],cm=current;
    for(const x of state.items.filter(x=>x.originChatId!==chat.id)){
     const mapped={...x,evidence:x.evidence.map(e=>({...e,id:pm[e.index]?.id||''})),changeEvidence:x.changeEvidence?{...x.changeEvidence,id:pm[x.lastChangeIndex]?.id||''}:null};
     const checked=(await inherit({items:[mapped]},pm,cm,chat.metadata.branch_at_message,chat.created_at)).items[0];
     if(checked.branchHold)x.branchHold=true;
    }
   }
-  const checked=await review({...state,items:publicItems(state)},await api.chat.getMessages(context.chatId));
+  const checked=await review({...state,items:publicItems(state)},current);
   gate('interceptor');gate('chats');gate('chat_mutation');context.signal?.throwIfAborted();
   const items=publicItems(checked);
   return {messages:items.length?[...messages,{role:'system',content:injectionText(items)}]:messages};
