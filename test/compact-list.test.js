@@ -68,6 +68,7 @@ test('source picker renders the latest 20 messages, pages backward and still sel
  v.click('약속');v.click('원문에서 정리');v.click('원문 목록 읽기');
  const messages=Array.from({length:300},(_,i)=>({id:'m'+i,content:'메시지 '+i,index:i}));
  v.listener({requestId:v.sent.at(-1).requestId,ok:true,chatId:'a',state:{revision:0,items:[],candidates:[],undo:[]},messages,total:300});
+ v.click('대화 목록 펼치기');
  const labels=()=>[...v.root.querySelectorAll('.lv-source b')].map(x=>x.textContent);
  assert.equal(labels().length,PAGE);assert.equal(labels()[0],'대화 281');assert.equal(labels().at(-1),'대화 300');
  assert.match(v.root.textContent,/보이지 않는 대화에도 적용/);

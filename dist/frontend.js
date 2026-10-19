@@ -8,32 +8,43 @@ export function safe(x){
  if(new TextEncoder().encode(raw).byteLength>2000000) throw Error('크기 제한 2MB');
  return JSON.parse(raw,(k,v)=>{if(['__proto__','constructor','prototype'].includes(k)) throw Error('위험한 키');return v;});
 }
-// Model output for analysis: models may wrap the JSON array in ``` fences, prepend
-// reasoning blocks (<think>…</think>) or add prose around it. Only syntax failures
-// fall through to the next attempt; size and dangerous-key errors still propagate.
-const balancedArray=(s,start)=>{let depth=0,str=false,esc=false;
+// Model output for analysis. A response that is already valid JSON is used exactly
+// as returned, so text inside JSON strings is never edited. Only when it is not
+// valid JSON are leading reasoning blocks (<think>…</think>), fences and prose
+// skipped. The outermost JSON value is located first and used as a whole: a cut-off
+// outer array fails instead of falling back to an array nested inside it. Size and
+// dangerous-key errors always propagate.
+const MAX_RESPONSE_BYTES=2000000;
+const balancedValue=(s,start)=>{let depth=0,str=false,esc=false;
  for(let i=start;i<s.length;i++){const c=s[i];
   if(str){if(esc)esc=false;else if(c==='\\')esc=true;else if(c==='"')str=false;continue;}
-  if(c==='"')str=true;else if(c==='[')depth++;else if(c===']'&&--depth===0)return s.slice(start,i+1);}
- return null;};
+  if(c==='"')str=true;else if(c==='['||c==='{')depth++;else if((c===']'||c==='}')&&--depth===0)return i+1;}
+ return -1;};
+const unwrapCandidates=v=>Array.isArray(v)?v:v&&typeof v==='object'?['candidates','memories','items'].map(k=>v[k]).find(Array.isArray):undefined;
+const parseFail=content=>{const head=content.trim().slice(0,120);return Error('모델 응답을 JSON 배열로 해석하지 못했습니다. 응답이 잘렸거나 형식이 다릅니다. 다시 시도하거나 다른 모델·모드를 선택하세요. 응답 앞부분: '+(head||'(빈 응답)')+(content.trim().length>120?'…':''));};
+const tryParse=text=>{try{return {value:safe(text)};}catch(error){if(error instanceof SyntaxError)return null;throw error;}};
+// Scan prose for the first top-level JSON value. A region that is balanced but not
+// usable is skipped as a whole (never searched inside); an unbalanced one ends the scan.
+function locate(text){
+ for(let i=text.search(/[[{]/);i>=0;){
+  const end=balancedValue(text,i);if(end<0)return {truncated:true};
+  const r=tryParse(text.slice(i,end)),list=r&&unwrapCandidates(r.value);if(list)return {list};
+  const next=text.slice(end).search(/[[{]/);i=next<0?-1:end+next;}
+ return {};
+}
 export function parseCandidates(content){
  if(Array.isArray(content))return safe(content);
  if(typeof content!=='string')throw Error('모델 응답 형식 오류: 텍스트 응답이 아닙니다. 다시 시도하세요.');
- let text=content.replace(/<(think|thinking|reasoning)\b[^>]*>[\s\S]*?<\/\1>/gi,'');
- const stray=text.search(/<\/(think|thinking|reasoning)>/i);if(stray>=0)text=text.slice(text.indexOf('>',stray)+1);
- text=text.trim();
- const fence=text.match(/```[a-zA-Z]*[ \t]*\r?\n?([\s\S]*?)```/);
- const attempts=[text];if(fence)attempts.push(fence[1].trim());
- for(const base of [...attempts]){for(let i=base.indexOf('['),n=0;i>=0&&n<20;i=base.indexOf('[',i+1),n++){const b=balancedArray(base,i);if(b)attempts.push(b);}const s=base.indexOf('['),e=base.lastIndexOf(']');if(s>=0&&e>s)attempts.push(base.slice(s,e+1));}
- // Some models wrap the array: {"candidates":[...]}, {"memories":[...]}, {"items":[...]}.
- // Prefer arrays of objects; an array with stray non-objects is still returned so the
- // per-item normalization can skip those entries instead of failing the whole batch.
- const unwrap=v=>Array.isArray(v)?v:v&&typeof v==='object'?['candidates','memories','items'].map(k=>v[k]).find(Array.isArray):undefined;
- const parsed=[];
- for(const a of attempts){let v;try{v=unwrap(safe(a));}catch(error){if(error instanceof SyntaxError)continue;throw error;}if(!v)continue;if(v.every(x=>x&&typeof x==='object'&&!Array.isArray(x)))return v;parsed.push(v);}
- const loose=parsed.find(v=>v.some(x=>x&&typeof x==='object'&&!Array.isArray(x)));if(loose)return loose;
- const head=content.trim().slice(0,120);
- throw Error('모델 응답을 JSON 배열로 해석하지 못했습니다. 다시 시도하거나 다른 모델·모드를 선택하세요. 응답 앞부분: '+(head||'(빈 응답)')+(content.trim().length>120?'…':''));
+ if(new TextEncoder().encode(content).byteLength>MAX_RESPONSE_BYTES)throw Error('크기 제한 2MB');
+ const whole=tryParse(content.trim());
+ if(whole){const list=unwrapCandidates(whole.value);if(list)return list;throw parseFail(content);}
+ let text=content.trim().replace(/^(\s*<(think|thinking|reasoning)\b[^>]*>[\s\S]*?<\/\2>)+/i,'').trim();
+ let found=locate(text);
+ // Reasoning leaked without its opening tag: only when the response does not itself
+ // start with JSON or a fence, retry after the stray closing tag.
+ if(!found.list&&!/^[[{`]/.test(text)){const stray=text.search(/<\/(think|thinking|reasoning)>/i);if(stray>=0)found=locate(text.slice(text.indexOf('>',stray)+1).trim());}
+ if(found.list)return found.list;
+ throw parseFail(content);
 }
 // Per-item normalization of model candidates. Common model variations are accepted;
 // anything still unusable is skipped with a reason instead of failing the whole batch.
@@ -184,6 +195,8 @@ const names=Object.fromEntries(tabs);
 const hasLifecycle=layer=>['promises','flows'].includes(layer);
 // Lists render at most PAGE rows at a time; "더 보기" adds another PAGE.
 export const PAGE=20;
+// One-line summary of a chat message: markup tags removed, whitespace collapsed.
+export const sourceLine=(text,n=40)=>clip(String(text??'').replace(/<[^>]*>/g,' '),n);
 const clip=(s,n=60)=>{s=String(s??'').replace(/\s+/g,' ').trim();return s.length>n?s.slice(0,n-1)+'…':s;};
 const theme=`
 #mmc-root-v1{--mv-bg:var(--lumiverse-bg,#17151e);--mv-paper:var(--lumiverse-bg-elevated,#24212e);--mv-paper-2:var(--lumiverse-input-bg,#2b2738);--mv-sunk:var(--lumiverse-fill-subtle,#302c3e);--mv-ink:var(--lumiverse-text,#eee9f5);--mv-ink-2:var(--lumiverse-text,#ded8e8);--mv-muted:var(--lumiverse-text-muted,#a89fb9);--mv-line:var(--lumiverse-border,#40394f);--mv-line-2:var(--lumiverse-border,#51475f);--mv-accent:var(--lumiverse-primary,#a88bfa);--mv-accent-ink:var(--lumiverse-primary-deep-contrast,#fff);--mv-accent-soft:var(--lumiverse-primary-light,#39304f);--mv-accent-2:var(--lumiverse-primary-text,#c9a0cc);--mv-ok:var(--lumiverse-success,#73b69b);--mv-warn:#d2b275;--mv-danger:var(--lumiverse-danger,#ed8a9b);--mv-wiki-link:var(--mv-accent);--mv-wiki-head:var(--mv-accent);--mv-wiki-head-ink:var(--mv-accent-ink);--mv-wiki-box:var(--mv-paper-2);--mv-wiki-rule:var(--mv-line);color:var(--mv-ink);font-size:13px}
@@ -239,7 +252,13 @@ const theme=`
 #mmc-root-v1 .lv-ranges{display:flex;flex-direction:column;gap:6px;padding:10px;border:1px solid var(--mv-line);border-radius:10px}
 #mmc-root-v1 .lv-range{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 #mmc-root-v1 .lv-source-list{display:flex;flex-direction:column;gap:6px}
-#mmc-root-v1 .lv-source .lv-check{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+#mmc-root-v1 .lv-source-summary{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:44px}
+#mmc-root-v1 .lv-source-summary b{flex:1;min-width:0}
+#mmc-root-v1 .lv-source{padding:0}
+#mmc-root-v1 .lv-source .lv-check{display:flex;flex-wrap:nowrap;gap:10px;align-items:center;min-height:44px;padding:0 12px;cursor:pointer}
+#mmc-root-v1 .lv-source .lv-check input{margin:0;width:20px;height:20px}
+#mmc-root-v1 .lv-source .lv-check b{flex:none;white-space:nowrap}
+#mmc-root-v1 .lv-source-line{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--mv-muted)}
 #mmc-root-v1 .lv-source-text{white-space:pre-wrap;margin:6px 0 0;cursor:pointer}
 #mmc-root-v1 .lv-source-text.is-clipped{max-height:5.4em;overflow:hidden;-webkit-mask-image:linear-gradient(#000 55%,transparent);mask-image:linear-gradient(#000 55%,transparent)}
 #mmc-root-v1 button:focus-visible,#mmc-root-v1 input:focus-visible,#mmc-root-v1 textarea:focus-visible,#mmc-root-v1 select:focus-visible{outline:2px solid var(--mv-accent);outline-offset:2px}
@@ -304,6 +323,7 @@ export function createView(root,{send,get,ui}){
   const grid=el('div',undefined,main,'mmc-ov-grid');
   const injection=card(grid,'RP에 들어갈 공개 기억 '+safe.length+'개');
   el('p','답변할 때 승인한 공개 기억만 프롬프트에 넣습니다. 넣기 전에 매번 원문 근거를 다시 확인합니다.',injection);
+  lastInjection(injection);
   button(ui.previewInjection?'주입 대상 접기':'주입 대상 보기',()=>{ui.previewInjection=!ui.previewInjection;render();},injection);
   if(ui.previewInjection){el('p','저장 상태 기준 후보입니다. 실제 답변에서는 원문 재검토·분기 검증 뒤 줄어들 수 있습니다.',injection,'lv-warning');paged(injection,safe,'inject',(x,list)=>itemRow(x,list,state,{slot:'inject',pick:false,layer:true}),x=>ui.detail==='inject:'+x.id);}
   const inbox=card(grid,'검토 대기');
@@ -316,6 +336,14 @@ export function createView(root,{send,get,ui}){
   const changed=[...state.items].sort((a,b)=>(b.lastChangedAt||0)-(a.lastChangedAt||0)).slice(0,5);
   const list=el('div',undefined,recent,'lv-list');for(const x of changed)itemRow(x,list,state,{slot:'recent',pick:false,layer:true});
   if(!state.items.length)el('p','아직 보관된 기억이 없어요. 종류별 탭에서 직접 추가하거나 원문을 선택해 후보를 만들어 보세요.',recent,'mmc-muted');
+ }
+ // Outcome of the most recent reply in this chat since the server started.
+ function lastInjection(parent){
+  const r=ui.injection,at=r&&Number.isFinite(r.at)?new Date(r.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'';
+  const line=r?.status==='skipped'?el('p','최근 답변('+at+'): 기억을 넣지 못했습니다. 프롬프트에서 대화 기록의 출처를 확인할 수 없는 생성이었습니다(메시지를 하나로 합치는 프리셋, 대화 기록이 하나뿐인 이어쓰기 등).',parent,'lv-warning')
+   :r?.status==='injected'?el('p','최근 답변('+at+'): 공개 기억 '+(r.count||0)+'개를 넣었습니다.',parent,'mmc-muted')
+   :el('p','최근 답변: 서버 시작 뒤 이 채팅의 답변 기록이 아직 없습니다.',parent,'mmc-muted');
+  line.dataset.injection=r?.status||'none';
  }
  // Compact row: one clipped title line + one meta line. Only the tapped row renders its detail.
  function itemRow(x,parent,state,{slot='list',candidate=false,pick=true,layer=false}={}){
@@ -397,37 +425,37 @@ export function createView(root,{send,get,ui}){
    else if(status.ok&&!rangeIds(msgs,[r],total).length)el('small','이 범위의 메시지는 모두 숨김이라 분석에서 제외됩니다.',box,'lv-warning');
   }
   button('+ 범위 추가',()=>{ranges.push(total?{start:Math.max(1,total-19),end:total}:{start:1,end:20});render();},box);
-  const count=el('p',undefined,c),cap=el('p',undefined,c,'lv-warning'),list=el('div',undefined,c,'lv-source-list'),picks=[];
+  const count=el('p',undefined,c),cap=el('p',undefined,c,'lv-warning'),picks=[];
+  // The message list stays folded behind a one-line summary until the user opens it.
+  const head=el('div',undefined,c,'lv-source-summary'),summary=el('b',undefined,head),open=!!ui.sourceListOpen&&msgs.length>0;
+  if(msgs.length){const t=button(open?'대화 목록 접기':'대화 목록 펼치기',()=>{ui.sourceListOpen=!open;render();},head,'mmc-sm');t.setAttribute('aria-expanded',String(open));t.dataset.sourceToggle='true';}
+  const list=el('div',undefined,c,'lv-source-list');list.hidden=!open;
   const sync=()=>{
    const covered=new Set(rangeIds(msgs,ranges,total)),chosen=effectiveSelection(msgs,ranges,ui.sources,total),size=inputSize(msgs,chosen,localTimeZone()),over=size>MAX_INPUT_CHARS;
    for(const {m,pick,item} of picks){pick.checked=covered.has(m.id)||ui.sources.has(m.id);pick.disabled=covered.has(m.id);item.classList.toggle('is-selected',pick.checked);}
+   const picked=new Set(chosen),numbers=msgs.map((m,i)=>picked.has(m.id)?sourceNumber(m,i):null).filter(n=>n!==null);
+   summary.textContent=!msgs.length?'분석할 대화: 원문 목록을 먼저 읽으세요':numbers.length?'분석할 대화: '+(numbers.length>1?numbers[0]+'–'+numbers.at(-1):numbers[0])+' ('+numbers.length+'개 선택)':'분석할 대화: 선택 없음';
    count.textContent='메시지 '+chosen.length+'개 선택됨 · 입력 '+size.toLocaleString('en-US')+' / '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자';count.className=over?'lv-warning':'mmc-muted';count.dataset.selected=String(chosen.length);
    cap.textContent=over?'선택한 원문이 한 번에 분석할 수 있는 입력 한도('+MAX_INPUT_CHARS.toLocaleString('en-US')+'자)를 넘었습니다. 범위를 줄이거나 나눠서 분석하세요.':'';cap.hidden=!over;
    preview.disabled=over;
    return {chosen,over};
   };
   // Only the latest page of messages is rendered; selection state lives in ui.sources/ranges, not the DOM.
-  const shown=Math.min(msgs.length,ui.limits.sources||PAGE),first=msgs.length-shown;
-  if(first>0){
+  const shown=open?Math.min(msgs.length,ui.limits.sources||PAGE):0,first=msgs.length-shown;
+  if(open&&first>0){
    el('small','최근 '+shown+'개만 표시 중입니다. 전체 선택·최근 N개·범위 선택은 보이지 않는 대화에도 적용됩니다.',list,'mmc-muted');
    const more=button(`이전 대화 더 보기 (+${Math.min(PAGE,first)}) · ${shown}/${msgs.length}개 표시 중`,()=>{ui.limits.sources=shown+PAGE;render();},list,'lv-more');more.dataset.more='sources';
   }
   for(const [i,m] of msgs.entries()){
    if(i<first)continue;
    const n=sourceNumber(m,i),item=el('div',undefined,list,'lv-item lv-source'),l=el('label',undefined,item,'lv-check'),pick=el('input',undefined,l);
-   pick.type='checkbox';pick.setAttribute('aria-label','대화 '+n+' 선택');el('b','대화 '+n,l);
+   pick.type='checkbox';pick.setAttribute('aria-label','대화 '+n+' 선택');el('b','대화 '+n,l);el('span',sourceLine(m.content)||'(빈 메시지)',l,'lv-source-line');
    pick.onclick=event=>{
     const on=pick.checked,last=ui.lastPick;
     const span=event?.shiftKey&&Number.isSafeInteger(last)&&last!==i&&last<msgs.length?msgs.slice(Math.min(last,i),Math.max(last,i)+1):[m];
     for(const x of span)on?ui.sources.add(x.id):ui.sources.delete(x.id);
     ui.lastPick=i;sync();
    };
-   const text=String(m.content??''),long=text.length>160||text.split('\n').length>3,open=ui.expanded.has(m.id);
-   const body=el('pre',text,item,'lv-source-text'+(long&&!open?' is-clipped':''));
-   if(long){
-    const toggle=button(open?'접기':'펼치기',()=>{const now=!ui.expanded.has(m.id);now?ui.expanded.add(m.id):ui.expanded.delete(m.id);body.classList.toggle('is-clipped',!now);toggle.textContent=now?'접기':'펼치기';toggle.setAttribute('aria-expanded',String(now));},item,'mmc-ghost mmc-sm');
-    toggle.setAttribute('aria-expanded',String(open));body.onclick=()=>toggle.click();
-   }
    picks.push({m,pick,item});
   }
   const mode=select('분석 모드',[['raw','직접 분석 (raw)'],['quiet','프리셋 적용 (quiet)']],c,ui.mode||'raw');mode.onchange=()=>ui.mode=mode.value;
@@ -484,7 +512,7 @@ export function setup(ctx){
   if(!reply.ok){note(reply.error);return;}
   if(!reply.recovery&&state&&reply.state.revision<state.revision&&!['reset','restoreBackup'].includes(p.type))return;
   if(p.sequence<accepted&&(reply.recovery||state&&reply.state?.revision===state.revision))return;
-  accepted=Math.max(accepted,p.sequence);chatId=reply.chatId;state=reply.state;recovery=!!reply.recovery;
+  accepted=Math.max(accepted,p.sequence);chatId=reply.chatId;state=reply.state;recovery=!!reply.recovery;ui.injection=reply.injection||null;
   if(reply.messages){ui.messages=reply.messages;delete ui.limits.sources;ui.total=Number.isSafeInteger(reply.total)?reply.total:reply.messages.length;ui.lastPick=null;}
   if(reply.connections)ui.connections=reply.connections;
   if(reply.preview)ui.preview=reply.preview;
@@ -496,7 +524,7 @@ export function setup(ctx){
  });
  const offSwitch=ctx.events.on('CHAT_SWITCHED',p=>{
   epoch++;chatId=p.chatId||null;state=null;recovery=false;pending.clear();
-  ui.messages=[];ui.total=0;ui.sources.clear();ui.expanded.clear();ui.lastPick=null;ui.preview=null;ui.selected.clear();ui.editor=null;ui.limits={};ui.queries={};ui.queueLayer='all';ui.detail=null;ui.transfer='';ui.status='';
+  ui.messages=[];ui.total=0;ui.sources.clear();ui.expanded.clear();ui.lastPick=null;ui.preview=null;ui.selected.clear();ui.editor=null;ui.limits={};ui.queries={};ui.queueLayer='all';ui.detail=null;ui.transfer='';ui.status='';ui.injection=null;
   view.render();if(chatId)send('load');
  });
  view.render();send('load');

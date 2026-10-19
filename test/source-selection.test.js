@@ -64,7 +64,7 @@ const mount=()=>{
  const cleanup=setup({ui:{registerDrawerTab:()=>({root,destroy(){}})},sendToBackend:r=>sent.push(r),onBackendMessage:fn=>{listener=fn;return()=>{};},events:{on:(_,fn)=>{switcher=fn;return()=>{};}}});
  listener({requestId:sent[0].requestId,ok:true,chatId:'a',state:{revision:0,items:[],candidates:[],undo:[]}});
  const click=text=>[...root.querySelectorAll('button')].find(x=>x.textContent===text).click();
- const load=(messages,total)=>{click('약속');click('원문에서 정리');click('원문 목록 읽기');listener({requestId:sent.at(-1).requestId,ok:true,chatId:'a',state:{revision:0,items:[],candidates:[],undo:[]},messages,total});};
+ const load=(messages,total)=>{click('약속');click('원문에서 정리');click('원문 목록 읽기');listener({requestId:sent.at(-1).requestId,ok:true,chatId:'a',state:{revision:0,items:[],candidates:[],undo:[]},messages,total});if(messages.length&&!root.querySelector('[data-source-toggle][aria-expanded="true"]'))click('대화 목록 펼치기');};
  const count=()=>Number(root.querySelector('[data-selected]').dataset.selected);
  const preview=()=>{click('입력·모델 미리보기');return sent.at(-1);};
  return {root,sent,click,load,count,preview,cleanup,switchTo:id=>switcher({chatId:id}),reply:extra=>listener({requestId:sent.at(-1).requestId,ok:true,chatId:'a',state:{revision:0,items:[],candidates:[],undo:[]},...extra})};
@@ -111,11 +111,33 @@ test('ranges add, warn when outside the chat, remove, and persist per chat',()=>
  v.click('선택 해제');assert.equal(v.root.querySelector('[aria-label="범위 1 시작"]'),null);v.cleanup();
 });
 
-test('long previews collapse and expand without toggling the checkbox',()=>{
- const v=mount();v.load([{id:'a',content:'line\n'.repeat(10),index:0}],1);
- const text=v.root.querySelector('.lv-source-text');assert.ok(text.classList.contains('is-clipped'));
- text.onclick();assert.ok(!text.classList.contains('is-clipped'));
- assert.equal(v.root.querySelector('[aria-label="대화 1 선택"]').checked,false);assert.equal(v.count(),0);v.cleanup();
+test('message rows are one line: number + tag-free 40-char preview, no per-row expand',()=>{
+ const long='<stat>HP 10</stat>\n첫 줄 내용입니다. '+'가'.repeat(80)+'\n둘째 줄';
+ const v=mount();v.load([{id:'a',content:long,index:0},{id:'b',content:'짧은 대화',index:1}],2);
+ const rows=[...v.root.querySelectorAll('.lv-source')];assert.equal(rows.length,2);
+ const line=rows[0].querySelector('.lv-source-line').textContent;
+ assert.ok(!line.includes('<')&&!line.includes('\n'));assert.ok(line.length<=40);assert.ok(line.endsWith('…'));assert.match(line,/^HP 10 첫 줄 내용입니다/);
+ assert.equal(rows[1].querySelector('.lv-source-line').textContent,'짧은 대화');
+ assert.equal(v.root.querySelector('.lv-source-text'),null);
+ assert.ok(![...v.root.querySelectorAll('.lv-source button')].length);
+ assert.ok(![...v.root.querySelectorAll('button')].some(b=>b.textContent==='펼치기'));
+ // tapping the row text toggles the checkbox through its label
+ assert.equal(rows[1].querySelector('.lv-source-line').closest('label'),rows[1].querySelector('input').closest('label'));
+ v.cleanup();
+});
+
+test('message list folds behind a summary line and keeps selection while folded',()=>{
+ const v=mount();v.load(visible,5);
+ const summary=()=>v.root.querySelector('.lv-source-summary b').textContent;
+ assert.equal(summary(),'분석할 대화: 선택 없음');
+ v.click('대화 목록 접기');assert.equal(v.root.querySelectorAll('.lv-source').length,0);
+ assert.equal(v.root.querySelector('[data-source-toggle]').getAttribute('aria-expanded'),'false');
+ v.click('전체 선택');assert.equal(summary(),'분석할 대화: 1–5 (4개 선택)');assert.equal(v.count(),4);
+ assert.deepEqual(v.preview().ids,['a','c','d','e']);
+ v.root.querySelector('[aria-label="최근 메시지 개수"]').value='1';v.click('최근 N개 선택');assert.equal(summary(),'분석할 대화: 5 (1개 선택)');
+ v.click('대화 목록 펼치기');assert.equal(v.root.querySelectorAll('.lv-source').length,4);
+ assert.ok(v.root.querySelector('[aria-label="대화 5 선택"]').checked);
+ v.cleanup();
 });
 
 test('selections over the input cap show the limit and block the preview request',()=>{
@@ -125,4 +147,15 @@ test('selections over the input cap show the limit and block the preview request
  assert.ok(btn.disabled);btn.click();assert.equal(v.sent.length,before);
  v.click('선택 해제');
  assert.ok(![...v.root.querySelectorAll('button')].find(x=>x.textContent==='입력·모델 미리보기').disabled);v.cleanup();
+});
+
+test('overview shows whether the latest reply got its memories',()=>{
+ const v=mount();const shown=()=>v.root.querySelector('[data-injection]');
+ assert.equal(shown().dataset.injection,'none');
+ v.click('새로고침');v.reply({injection:{at:Date.now(),status:'skipped'}});
+ assert.equal(shown().dataset.injection,'skipped');assert.match(shown().textContent,/기억을 넣지 못했습니다/);assert.ok(shown().classList.contains('lv-warning'));
+ v.click('새로고침');v.reply({injection:{at:Date.now(),status:'injected',count:3}});
+ assert.match(shown().textContent,/공개 기억 3개를 넣었습니다/);
+ v.switchTo('b');v.reply({});assert.equal(shown().dataset.injection,'none');
+ v.cleanup();
 });

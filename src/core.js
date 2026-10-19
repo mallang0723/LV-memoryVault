@@ -8,32 +8,43 @@ export function safe(x){
  if(new TextEncoder().encode(raw).byteLength>2000000) throw Error('크기 제한 2MB');
  return JSON.parse(raw,(k,v)=>{if(['__proto__','constructor','prototype'].includes(k)) throw Error('위험한 키');return v;});
 }
-// Model output for analysis: models may wrap the JSON array in ``` fences, prepend
-// reasoning blocks (<think>…</think>) or add prose around it. Only syntax failures
-// fall through to the next attempt; size and dangerous-key errors still propagate.
-const balancedArray=(s,start)=>{let depth=0,str=false,esc=false;
+// Model output for analysis. A response that is already valid JSON is used exactly
+// as returned, so text inside JSON strings is never edited. Only when it is not
+// valid JSON are leading reasoning blocks (<think>…</think>), fences and prose
+// skipped. The outermost JSON value is located first and used as a whole: a cut-off
+// outer array fails instead of falling back to an array nested inside it. Size and
+// dangerous-key errors always propagate.
+const MAX_RESPONSE_BYTES=2000000;
+const balancedValue=(s,start)=>{let depth=0,str=false,esc=false;
  for(let i=start;i<s.length;i++){const c=s[i];
   if(str){if(esc)esc=false;else if(c==='\\')esc=true;else if(c==='"')str=false;continue;}
-  if(c==='"')str=true;else if(c==='[')depth++;else if(c===']'&&--depth===0)return s.slice(start,i+1);}
- return null;};
+  if(c==='"')str=true;else if(c==='['||c==='{')depth++;else if((c===']'||c==='}')&&--depth===0)return i+1;}
+ return -1;};
+const unwrapCandidates=v=>Array.isArray(v)?v:v&&typeof v==='object'?['candidates','memories','items'].map(k=>v[k]).find(Array.isArray):undefined;
+const parseFail=content=>{const head=content.trim().slice(0,120);return Error('모델 응답을 JSON 배열로 해석하지 못했습니다. 응답이 잘렸거나 형식이 다릅니다. 다시 시도하거나 다른 모델·모드를 선택하세요. 응답 앞부분: '+(head||'(빈 응답)')+(content.trim().length>120?'…':''));};
+const tryParse=text=>{try{return {value:safe(text)};}catch(error){if(error instanceof SyntaxError)return null;throw error;}};
+// Scan prose for the first top-level JSON value. A region that is balanced but not
+// usable is skipped as a whole (never searched inside); an unbalanced one ends the scan.
+function locate(text){
+ for(let i=text.search(/[[{]/);i>=0;){
+  const end=balancedValue(text,i);if(end<0)return {truncated:true};
+  const r=tryParse(text.slice(i,end)),list=r&&unwrapCandidates(r.value);if(list)return {list};
+  const next=text.slice(end).search(/[[{]/);i=next<0?-1:end+next;}
+ return {};
+}
 export function parseCandidates(content){
  if(Array.isArray(content))return safe(content);
  if(typeof content!=='string')throw Error('모델 응답 형식 오류: 텍스트 응답이 아닙니다. 다시 시도하세요.');
- let text=content.replace(/<(think|thinking|reasoning)\b[^>]*>[\s\S]*?<\/\1>/gi,'');
- const stray=text.search(/<\/(think|thinking|reasoning)>/i);if(stray>=0)text=text.slice(text.indexOf('>',stray)+1);
- text=text.trim();
- const fence=text.match(/```[a-zA-Z]*[ \t]*\r?\n?([\s\S]*?)```/);
- const attempts=[text];if(fence)attempts.push(fence[1].trim());
- for(const base of [...attempts]){for(let i=base.indexOf('['),n=0;i>=0&&n<20;i=base.indexOf('[',i+1),n++){const b=balancedArray(base,i);if(b)attempts.push(b);}const s=base.indexOf('['),e=base.lastIndexOf(']');if(s>=0&&e>s)attempts.push(base.slice(s,e+1));}
- // Some models wrap the array: {"candidates":[...]}, {"memories":[...]}, {"items":[...]}.
- // Prefer arrays of objects; an array with stray non-objects is still returned so the
- // per-item normalization can skip those entries instead of failing the whole batch.
- const unwrap=v=>Array.isArray(v)?v:v&&typeof v==='object'?['candidates','memories','items'].map(k=>v[k]).find(Array.isArray):undefined;
- const parsed=[];
- for(const a of attempts){let v;try{v=unwrap(safe(a));}catch(error){if(error instanceof SyntaxError)continue;throw error;}if(!v)continue;if(v.every(x=>x&&typeof x==='object'&&!Array.isArray(x)))return v;parsed.push(v);}
- const loose=parsed.find(v=>v.some(x=>x&&typeof x==='object'&&!Array.isArray(x)));if(loose)return loose;
- const head=content.trim().slice(0,120);
- throw Error('모델 응답을 JSON 배열로 해석하지 못했습니다. 다시 시도하거나 다른 모델·모드를 선택하세요. 응답 앞부분: '+(head||'(빈 응답)')+(content.trim().length>120?'…':''));
+ if(new TextEncoder().encode(content).byteLength>MAX_RESPONSE_BYTES)throw Error('크기 제한 2MB');
+ const whole=tryParse(content.trim());
+ if(whole){const list=unwrapCandidates(whole.value);if(list)return list;throw parseFail(content);}
+ let text=content.trim().replace(/^(\s*<(think|thinking|reasoning)\b[^>]*>[\s\S]*?<\/\2>)+/i,'').trim();
+ let found=locate(text);
+ // Reasoning leaked without its opening tag: only when the response does not itself
+ // start with JSON or a fence, retry after the stray closing tag.
+ if(!found.list&&!/^[[{`]/.test(text)){const stray=text.search(/<\/(think|thinking|reasoning)>/i);if(stray>=0)found=locate(text.slice(text.indexOf('>',stray)+1).trim());}
+ if(found.list)return found.list;
+ throw parseFail(content);
 }
 // Per-item normalization of model candidates. Common model variations are accepted;
 // anything still unusable is skipped with a reason instead of failing the whole batch.

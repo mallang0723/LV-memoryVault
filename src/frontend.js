@@ -14,7 +14,7 @@ export function setup(ctx){
   if(!reply.ok){note(reply.error);return;}
   if(!reply.recovery&&state&&reply.state.revision<state.revision&&!['reset','restoreBackup'].includes(p.type))return;
   if(p.sequence<accepted&&(reply.recovery||state&&reply.state?.revision===state.revision))return;
-  accepted=Math.max(accepted,p.sequence);chatId=reply.chatId;state=reply.state;recovery=!!reply.recovery;
+  accepted=Math.max(accepted,p.sequence);chatId=reply.chatId;state=reply.state;recovery=!!reply.recovery;ui.injection=reply.injection||null;
   if(reply.messages){ui.messages=reply.messages;delete ui.limits.sources;ui.total=Number.isSafeInteger(reply.total)?reply.total:reply.messages.length;ui.lastPick=null;}
   if(reply.connections)ui.connections=reply.connections;
   if(reply.preview)ui.preview=reply.preview;
@@ -26,7 +26,7 @@ export function setup(ctx){
  });
  const offSwitch=ctx.events.on('CHAT_SWITCHED',p=>{
   epoch++;chatId=p.chatId||null;state=null;recovery=false;pending.clear();
-  ui.messages=[];ui.total=0;ui.sources.clear();ui.expanded.clear();ui.lastPick=null;ui.preview=null;ui.selected.clear();ui.editor=null;ui.limits={};ui.queries={};ui.queueLayer='all';ui.detail=null;ui.transfer='';ui.status='';
+  ui.messages=[];ui.total=0;ui.sources.clear();ui.expanded.clear();ui.lastPick=null;ui.preview=null;ui.selected.clear();ui.editor=null;ui.limits={};ui.queries={};ui.queueLayer='all';ui.detail=null;ui.transfer='';ui.status='';ui.injection=null;
   view.render();if(chatId)send('load');
  });
  view.render();send('load');

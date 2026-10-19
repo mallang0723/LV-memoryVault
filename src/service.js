@@ -16,8 +16,13 @@ export const ANALYSIS_PROMPT=[
  '- Never leave relative time words (어제, 오늘, 내일, 방금, yesterday, today, just now) in text: rewrite them as absolute dates or times resolved against the in-story date or the send time.',
  '- Write text in the language of the source (Korean source, Korean text).'
 ].join('\n');
+export const SKIP_NOTICE='이번 답변에는 기억을 넣지 못했습니다. 프롬프트에서 대화 기록의 출처를 확인할 수 없는 생성입니다(메시지를 하나로 합치는 프리셋, 대화 기록이 하나뿐인 이어쓰기 등). 보관함 패널의 \'최근 답변\' 표시로 다시 확인할 수 있습니다.';
 export function createService(api){
  const queues=new Map(), previews=new Map();
+ // Last injection outcome per user/chat, shown in the panel, plus the public memory
+ // count seen by authenticated panel requests. Both live only in this worker.
+ const injections=new Map(), publicCounts=new Map(), warned=new Set();
+ const remember=(map,key,value)=>{map.delete(key);map.set(key,value);if(map.size>500)map.delete(map.keys().next().value);};
  const gate=p=>{if(!api.permissions.has(p))throw Error('권한 필요: '+p);};
  // Lumiverse raw generation resolves only credentials from connection_id; the model
  // comes from the request itself, so read it from the selected connection.
@@ -130,7 +135,7 @@ export function createService(api){
     const actual=await read(path,user);if(JSON.stringify(actual)!==JSON.stringify(next))throw Error('저장 미확정: 재전송하지 말고 새로고침/백업 확인');
    }
    state=next;return {...response(),saved:true,...(notice?{notice:'저장 완료 · '+notice}:{})};
-  });queues.set(key,task);try{return await task;}finally{if(queues.get(key)===task)queues.delete(key);}
+  });queues.set(key,task);try{const out=await task;if(out?.state)remember(publicCounts,key,publicItems(out.state).length);const injection=injections.get(key);return injection?{...out,injection}:out;}finally{if(queues.get(key)===task)queues.delete(key);}
  }
  async function intercept(messages,context){
   try{
@@ -143,7 +148,17 @@ export function createService(api){
   // contain every stamped turn, and the claimed user must own that chat. Without a
   // stamped turn the generation cannot be tied to a chat, so nothing is injected.
   const stamped=historyIds(messages);
-  if(!stamped.length)throw Error('생성 채팅 확인 불가');
+  if(!stamped.length){
+   // Not supported: the prompt carries no host-stamped chat turn (for example a
+   // preset that collapses all messages into one, or a continue whose only history
+   // turn is the target). Nothing is injected, and the user is told instead of the
+   // omission passing silently. No storage is read for an unverified chat.
+   const key=context.userId+':'+context.chatId;
+   remember(injections,key,{at:Date.now(),status:'skipped'});
+   if(publicCounts.get(key)!==0&&!warned.has(key)){warned.add(key);if(warned.size>500)warned.delete(warned.values().next().value);
+    try{api.toast?.warning?.(SKIP_NOTICE,{title:'기억 보관함',userId:context.userId});}catch{}}
+   return {messages};
+  }
   const chat=await api.chats.get(context.chatId,context.userId);
   if(!chat)throw Error('채팅 소유권 확인 실패');
   const current=await api.chat.getMessages(context.chatId),own=new Set(current.map(m=>m?.id));
@@ -162,6 +177,7 @@ export function createService(api){
   const checked=await review({...state,items:publicItems(state)},current);
   gate('interceptor');gate('chats');gate('chat_mutation');context.signal?.throwIfAborted();
   const items=publicItems(checked);
+  const key=context.userId+':'+context.chatId;remember(injections,key,{at:Date.now(),status:'injected',count:items.length});warned.delete(key);
   return {messages:items.length?[...messages,{role:'system',content:injectionText(items)}]:messages};
   }catch{return {messages};}
  }
