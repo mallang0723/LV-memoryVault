@@ -206,9 +206,22 @@ export function resolveScope(scope,total){
   if(s.warning)warnings.push('범위 '+(k+1)+': '+s.warning);
   raw.push([s.start,s.end]);
  }
+ // Only overlapping ranges are merged; adjacent ones (10–20, 21–30) stay separate,
+ // since each span is analyzed with its own model call.
  raw.sort((a,b)=>a[0]-b[0]||a[1]-b[1]);const spans=[];
- for(const x of raw){const last=spans.at(-1);if(last&&x[0]<=last[1]+1){if(x[0]<=last[1])warnings.includes('겹치는 범위는 하나로 합쳤습니다.')||warnings.push('겹치는 범위는 하나로 합쳤습니다.');last[1]=Math.max(last[1],x[1]);}else spans.push([...x]);}
+ for(const x of raw){const last=spans.at(-1);if(last&&x[0]<=last[1]){warnings.includes('겹치는 범위는 하나로 합쳤습니다.')||warnings.push('겹치는 범위는 하나로 합쳤습니다.');last[1]=Math.max(last[1],x[1]);}else spans.push([...x]);}
  return {ok:true,spans,warnings};
+}
+// Pre-fill for '+ 범위 추가', following Marinara's batch summary ranges: the new row
+// starts right after the previous row and keeps its length, clamped to the chat.
+// null (button disabled) when the previous row is unusable or already reaches the end.
+export function nextRange(prev,total){
+ const [a,b]=[prev?.start,prev?.end].map(int);
+ if(!(Number.isSafeInteger(total)&&total>0)||!Number.isSafeInteger(a)||!Number.isSafeInteger(b)||a<1||b<1)return null;
+ const lo=Math.min(a,b),hi=Math.max(a,b);
+ if(hi>total)return null;
+ const start=hi+1;if(start>total)return null;
+ return {start:String(start),end:String(Math.min(total,start+(hi-lo)))};
 }
 export const spanLabel=spans=>'대화 '+spans.map(([a,b])=>a===b?String(a):a+'–'+b).join(', ');
 // Panel summary from the count only: "대화 120–141 (22개)", hidden positions excluded.

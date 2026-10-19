@@ -164,13 +164,15 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
     notice=internal.notice||'';count={analyzed:'자동 분석 · '+internal.text,added:internal.items.length};
     next=apply(state,{type:'propose',items:internal.items.map(x=>({...x,id:crypto.randomUUID(),scope:'unknown',evidence:internal.evidence,source:'자동 분석 모델 후보 · '+internal.text}))});
    }else if(r.type==='analyze'){
-    // One request: the scope (recent N or numeric ranges) is resolved here against the
-    // host's own messages; the panel never sends message IDs or text.
+    // One request = one model call over one span: recent N, or a single range. The
+    // panel runs several ranges as one request per range, in order. The scope is
+    // resolved here against the host's own messages; the panel never sends IDs or text.
     gate('generation');gate('chat_mutation');
     if(!['raw','quiet'].includes(r.mode)||!validId(r.connection))throw Error('모델 연결 확인 필요: 설정 탭에서 분석 모드와 모델 연결을 고르세요.');
     const target=r.mode==='raw'?await rawTarget(r.connection,user):{};
     const all=await api.chat.getMessages(chatId),source=selectSource(all,r.source),messages=source.picked.map(x=>x.m);
-    const input=sourceInput(messages,r.timeZone);if(input.length>MAX_INPUT_CHARS)throw Error('원문 크기 초과: '+source.text+' 입력 '+input.length.toLocaleString('en-US')+'자 / 한도 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자. 범위를 줄이거나 나눠서 분석하세요.');
+    if(source.spans.length>1)throw Error('범위 여러 개를 한 번에 분석하지 않습니다. 범위마다 따로 분석하세요.');
+    const input=sourceInput(messages,r.timeZone);if(input.length>MAX_INPUT_CHARS)throw Error('원문 크기 초과: '+source.text+' 입력 '+input.length.toLocaleString('en-US')+'자 / 한도 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자. '+(r.source?.scope==='range'?'이 범위를 더 작은 범위 여러 개로 나눠서 분석하세요.':'개수를 줄이거나 범위로 나눠서 분석하세요.'));
     const evidence=await Promise.all(source.picked.map(async({m,index})=>({id:m.id,index,fingerprint:await fingerprint(m.content)})));
     count={...countOf(all),analyzed:source.text};
     gate('generation');const generated=await api.generate[r.mode]({messages:[{role:'system',content:ANALYSIS_PROMPT},{role:'user',content:input}],connection_id:r.connection,userId:user,...target});

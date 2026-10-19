@@ -206,9 +206,22 @@ export function resolveScope(scope,total){
   if(s.warning)warnings.push('범위 '+(k+1)+': '+s.warning);
   raw.push([s.start,s.end]);
  }
+ // Only overlapping ranges are merged; adjacent ones (10–20, 21–30) stay separate,
+ // since each span is analyzed with its own model call.
  raw.sort((a,b)=>a[0]-b[0]||a[1]-b[1]);const spans=[];
- for(const x of raw){const last=spans.at(-1);if(last&&x[0]<=last[1]+1){if(x[0]<=last[1])warnings.includes('겹치는 범위는 하나로 합쳤습니다.')||warnings.push('겹치는 범위는 하나로 합쳤습니다.');last[1]=Math.max(last[1],x[1]);}else spans.push([...x]);}
+ for(const x of raw){const last=spans.at(-1);if(last&&x[0]<=last[1]){warnings.includes('겹치는 범위는 하나로 합쳤습니다.')||warnings.push('겹치는 범위는 하나로 합쳤습니다.');last[1]=Math.max(last[1],x[1]);}else spans.push([...x]);}
  return {ok:true,spans,warnings};
+}
+// Pre-fill for '+ 범위 추가', following Marinara's batch summary ranges: the new row
+// starts right after the previous row and keeps its length, clamped to the chat.
+// null (button disabled) when the previous row is unusable or already reaches the end.
+export function nextRange(prev,total){
+ const [a,b]=[prev?.start,prev?.end].map(int);
+ if(!(Number.isSafeInteger(total)&&total>0)||!Number.isSafeInteger(a)||!Number.isSafeInteger(b)||a<1||b<1)return null;
+ const lo=Math.min(a,b),hi=Math.max(a,b);
+ if(hi>total)return null;
+ const start=hi+1;if(start>total)return null;
+ return {start:String(start),end:String(Math.min(total,start+(hi-lo)))};
 }
 export const spanLabel=spans=>'대화 '+spans.map(([a,b])=>a===b?String(a):a+'–'+b).join(', ');
 // Panel summary from the count only: "대화 120–141 (22개)", hidden positions excluded.
@@ -483,13 +496,15 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
     notice=internal.notice||'';count={analyzed:'자동 분석 · '+internal.text,added:internal.items.length};
     next=apply(state,{type:'propose',items:internal.items.map(x=>({...x,id:crypto.randomUUID(),scope:'unknown',evidence:internal.evidence,source:'자동 분석 모델 후보 · '+internal.text}))});
    }else if(r.type==='analyze'){
-    // One request: the scope (recent N or numeric ranges) is resolved here against the
-    // host's own messages; the panel never sends message IDs or text.
+    // One request = one model call over one span: recent N, or a single range. The
+    // panel runs several ranges as one request per range, in order. The scope is
+    // resolved here against the host's own messages; the panel never sends IDs or text.
     gate('generation');gate('chat_mutation');
     if(!['raw','quiet'].includes(r.mode)||!validId(r.connection))throw Error('모델 연결 확인 필요: 설정 탭에서 분석 모드와 모델 연결을 고르세요.');
     const target=r.mode==='raw'?await rawTarget(r.connection,user):{};
     const all=await api.chat.getMessages(chatId),source=selectSource(all,r.source),messages=source.picked.map(x=>x.m);
-    const input=sourceInput(messages,r.timeZone);if(input.length>MAX_INPUT_CHARS)throw Error('원문 크기 초과: '+source.text+' 입력 '+input.length.toLocaleString('en-US')+'자 / 한도 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자. 범위를 줄이거나 나눠서 분석하세요.');
+    if(source.spans.length>1)throw Error('범위 여러 개를 한 번에 분석하지 않습니다. 범위마다 따로 분석하세요.');
+    const input=sourceInput(messages,r.timeZone);if(input.length>MAX_INPUT_CHARS)throw Error('원문 크기 초과: '+source.text+' 입력 '+input.length.toLocaleString('en-US')+'자 / 한도 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자. '+(r.source?.scope==='range'?'이 범위를 더 작은 범위 여러 개로 나눠서 분석하세요.':'개수를 줄이거나 범위로 나눠서 분석하세요.'));
     const evidence=await Promise.all(source.picked.map(async({m,index})=>({id:m.id,index,fingerprint:await fingerprint(m.content)})));
     count={...countOf(all),analyzed:source.text};
     gate('generation');const generated=await api.generate[r.mode]({messages:[{role:'system',content:ANALYSIS_PROMPT},{role:'user',content:input}],connection_id:r.connection,userId:user,...target});

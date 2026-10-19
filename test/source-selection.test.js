@@ -26,7 +26,7 @@ test('scopes resolve to merged spans with Korean errors for anything unusable',(
  assert.match(resolveScope({scope:'range',ranges:[{start:1,end:2},{start:5,end:3}]},10).error,/^범위 2: 시작 번호가 끝 번호보다/);
  assert.match(resolveScope({scope:'range',ranges:[{start:20,end:30}]},10).error,/범위 1: 이 범위는 채팅 기록 밖/);
  const merged=resolveScope({scope:'range',ranges:[{start:8,end:20},{start:1,end:3},{start:2,end:5},{start:6,end:6}]},10);
- assert.deepEqual(merged.spans,[[1,6],[8,10]]);assert.ok(merged.warnings.some(w=>/겹치는 범위/.test(w)));assert.ok(merged.warnings.some(w=>/범위 1: 끝 번호가 채팅 기록 밖/.test(w)));
+ assert.deepEqual(merged.spans,[[1,5],[6,6],[8,10]]);assert.ok(merged.warnings.some(w=>/겹치는 범위/.test(w)));assert.ok(merged.warnings.some(w=>/범위 1: 끝 번호가 채팅 기록 밖/.test(w)));
 });
 
 test('summary line counts positions and leaves hidden messages out',()=>{
@@ -55,11 +55,11 @@ test('count returns only the total and hidden positions, never message text',asy
 
 test('one analyze request reads only the chosen range and records evidence by chat position',async()=>{
  const api=fakeApi(Array.from({length:6},(_,i)=>({id:'m'+i,content:'BODY_'+i,extra:i===4?{hidden:true}:{}}))),s=createService(api);
- const r=await s.run({type:'analyze',chatId:'a',revision:0,mode:'raw',connection:'c1',source:{scope:'range',ranges:[{start:2,end:3},{start:5,end:9}]}},'owner');
+ const r=await s.run({type:'analyze',chatId:'a',revision:0,mode:'raw',connection:'c1',source:{scope:'range',ranges:[{start:4,end:9}]}},'owner');
  const input=api.calls[0].messages[1].content;
- assert.ok(input.includes('BODY_1')&&input.includes('BODY_2')&&input.includes('BODY_5'));
- assert.ok(!input.includes('BODY_0')&&!input.includes('BODY_3')&&!input.includes('BODY_4'));
- assert.equal(r.total,6);assert.match(r.notice,/^대화 2–3, 5–6 \(3개\) · 숨김 1개 제외 분석/);
+ assert.ok(input.includes('BODY_3')&&input.includes('BODY_5'));
+ assert.ok(!input.includes('BODY_0')&&!input.includes('BODY_2')&&!input.includes('BODY_4'));
+ assert.equal(r.total,6);assert.match(r.notice,/^대화 4–6 \(2개\) · 숨김 1개 제외 분석/);
 });
 
 const mount=()=>{
