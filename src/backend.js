@@ -8,6 +8,9 @@ export function start(api){
   let reply;try{reply={ok:true,...await service.run(payload,userId)};}catch(error){reply={ok:false,error:error.message};}
   api.sendToFrontend({...reply,requestId:payload.requestId},userId,frontendSessionId?{frontendSessionId}:undefined);
  });
- return ()=>{offMessage();offInterceptor();};
+ // Automatic analysis (off unless the user enabled it for a chat). Lumiverse 1.2.5
+ // delivers host events as handler(payload, userId); the check runs after the reply.
+ const offEnded=typeof api.on==='function'?api.on('GENERATION_ENDED',(payload,userId)=>{service.onGenerationEnded(payload,userId).catch(()=>{});}):()=>{};
+ return ()=>{offEnded();service.stop();offMessage();offInterceptor();};
 }
 if(typeof spindle!=='undefined')start(spindle);

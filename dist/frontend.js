@@ -344,7 +344,7 @@ export function createView(root,{send,get,ui}){
   const grid=el('div',undefined,main,'mmc-ov-grid');
   const injection=card(grid,'RP에 들어갈 공개 기억 '+safe.length+'개');
   el('p','답변할 때 승인한 공개 기억만 프롬프트에 넣습니다. 넣기 전에 매번 원문 근거를 다시 확인합니다.',injection);
-  lastInjection(injection);
+  lastInjection(injection);autoLine(injection);
   button(ui.previewInjection?'주입 대상 접기':'주입 대상 보기',()=>{ui.previewInjection=!ui.previewInjection;render();},injection);
   if(ui.previewInjection){el('p','저장 상태 기준 후보입니다. 실제 답변에서는 원문 재검토·분기 검증 뒤 줄어들 수 있습니다.',injection,'lv-warning');paged(injection,safe,'inject',(x,list)=>itemRow(x,list,state,{slot:'inject',pick:false,layer:true}),x=>ui.detail==='inject:'+x.id);}
   const inbox=card(grid,'검토 대기');
@@ -365,6 +365,16 @@ export function createView(root,{send,get,ui}){
    :r?.status==='injected'?el('p','최근 답변('+at+'): 공개 기억 '+(r.count||0)+'개를 넣었습니다.',parent,'mmc-muted')
    :el('p','최근 답변: 서버 시작 뒤 이 채팅의 답변 기록이 아직 없습니다.',parent,'mmc-muted');
   line.dataset.injection=r?.status||'none';
+ }
+ // Automatic analysis status for this chat (off by default; nothing shown while off and unused).
+ function autoLine(parent){
+  const a=ui.auto;if(!a||(!a.enabled&&!a.last))return;
+  const l=a.last,at=l?new Date(l.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'';
+  const head='자동 분석'+(a.enabled?'':'(꺼짐)')+': ';
+  const text=!l?head+'사용자 메시지 '+a.every+'개마다 · 아직 실행 전'
+   :l.ok?head+'마지막 실행 '+at+' · 후보 '+l.added+'개'+(l.text?' · '+l.text:'')+(l.note?' · '+l.note:'')
+   :head+'마지막 실행 '+at+' · 실패: '+l.error+(a.enabled?' · 사용자 메시지 '+a.every+'개가 더 쌓이면 다시 시도':'');
+  const line=el('p',text,parent,l&&!l.ok?'lv-warning':'mmc-muted');line.dataset.auto=!l?'idle':l.ok?'ok':'error';
  }
  // Compact row: one clipped title line + one meta line. Only the tapped row renders its detail.
  function itemRow(x,parent,state,{slot='list',candidate=false,pick=true,layer=false}={}){
@@ -472,6 +482,22 @@ export function createView(root,{send,get,ui}){
   const connection=select('모델 연결',[['','연결을 선택하세요'],...ui.connections.map(x=>[x.id,x.name+' · '+(x.model||'(모델 미지정)')])],c,ui.connection||'');connection.onchange=()=>ui.connection=connection.value;
   button('모델 목록 새로고침',()=>send('connections'),c,'mmc-sm');
   el('p','분석 버튼을 누르면 고른 범위의 원문이 이 연결로 바로 전송됩니다. 비밀이 담긴 대화는 범위에서 빼세요. 모델 결과는 후보로만 들어가며 자동 승인하지 않습니다. 선택은 패널을 다시 불러오기 전까지 유지됩니다.',c,'lv-warning');
+  autoSettings(main);
+ }
+ // Per-chat automatic analysis. Saved on the server apart from memories (no undo step).
+ function autoSettings(main){
+  const a=ui.auto||{enabled:false,every:10},c=card(main,'자동 분석');c.dataset.autoSettings='true';
+  const toggle=check('사용자 메시지 N개마다 자동 분석',c,!!a.enabled);
+  if(!a.enabled&&!ui.connection){toggle.disabled=true;el('small','켜려면 위에서 모델 연결을 먼저 고르세요.',c,'mmc-muted');}
+  const l=el('label',undefined,c,'lv-num');el('span','사용자 메시지',l);const n=el('input',undefined,l);n.type='text';n.setAttribute('inputmode','numeric');n.setAttribute('pattern','[0-9]*');n.setAttribute('aria-label','자동 분석 간격');n.value=String(a.every||10);n.oninput=()=>{n.value=n.value.replace(/[^0-9]/g,'');};el('span','개마다 (3–100)',l);
+  el('p','켜면 마지막 자동 분석 뒤의 대화 원문(한 번에 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자까지)이 위에서 고른 모델 연결로 자동 전송됩니다.',c,'lv-warning');
+  const save=button('자동 분석 저장',()=>{
+   const every=Number(n.value);
+   if(!Number.isInteger(every)||every<3||every>100){ui.note('자동 분석 간격은 3~100 사이 정수로 입력하세요.');return;}
+   if(toggle.checked&&!ui.connection){ui.note('자동 분석을 켜려면 모델 연결을 먼저 고르세요.');return;}
+   send('autoSettings',{enabled:toggle.checked,every,mode:ui.mode||'raw',connection:ui.connection||'',timeZone:localTimeZone()});
+  },c,'mmc-sm');save.dataset.autoSave='true';
+  el('small',a.enabled?'켜짐 · 이 채팅만 · 사용자 메시지 '+a.every+'개마다 · 결과는 검토 대기 후보로만 들어갑니다':'꺼짐 (기본값) · 채팅마다 따로 켭니다. 켠 시점부터 셉니다.',c,'mmc-muted');
  }
  function settings(main,state){
   analysisSettings(main);
@@ -482,8 +508,8 @@ export function createView(root,{send,get,ui}){
   const transfer=field('내보내기 가져오기 JSON','textarea',c,ui.transfer||'');transfer.dataset.transfer='true';transfer.oninput=()=>ui.transfer=transfer.value;
   button('JSON 내보내기',()=>send('export'),c);const confirm=check('현재 기억 교체 확인',c);
   button('JSON 가져오기 (현재 항목 교체·모두 보류)',()=>{if(!confirm.checked){ui.note('현재 기억 교체 확인이 필요합니다.');return;}try{send('import',{data:JSON.parse(transfer.value)});}catch{ui.note('JSON 형식 오류');}},c);
-  const info=card(main,'이식 범위와 권한');el('p','Lumiverse 테마를 따릅니다. chats·chat_mutation은 소유권/원문 조회, generation은 사용자가 누른 분석, interceptor는 생성 직전 기억 주입에 사용합니다. 메시지는 수정하지 않습니다.',info);
-  el('p','인물 매핑·주입 예산·키워드 조건·흐름별 이력·구조화 장면·원본 데이터 변환·백그라운드 분석·로어북 동기화·Keeper는 지원하지 않습니다. 가짜 설정은 표시하지 않습니다.',info,'lv-warning');
+  const info=card(main,'이식 범위와 권한');el('p','Lumiverse 테마를 따릅니다. chats·chat_mutation은 소유권/원문 조회, generation은 사용자가 누른 분석과 켜 둔 자동 분석, interceptor는 생성 직전 기억 주입에 사용합니다. 메시지는 수정하지 않습니다.',info);
+  el('p','인물 매핑·주입 예산·키워드 조건·흐름별 이력·구조화 장면·원본 데이터 변환·로어북 동기화·Keeper는 지원하지 않습니다. 가짜 설정은 표시하지 않습니다.',info,'lv-warning');
   el('p','영구 책을 만들지 않습니다. 과거 수동 내보내기 책은 호스트에서 직접 연결 해제·삭제하세요. 확장 비활성화는 데이터를 남깁니다. 제거 전 JSON을 내보내세요.',info);
  }
  function render(){
@@ -517,6 +543,8 @@ export function setup(ctx){
  const send=(type,extra={})=>{const requestId=crypto.randomUUID();pending.set(requestId,{epoch,type,sequence:++serial});ctx.sendToBackend({requestId,type,chatId,revision:state?.revision,...extra});};
  const view=createView(root,{send,get:()=>({chatId,state,recovery}),ui});
  const offMessage=ctx.onBackendMessage(reply=>{
+  // Automatic analysis finished in the background: refresh the open chat only.
+  if(reply?.event==='autoAnalysis'&&!reply.requestId){if(alive&&reply.chatId&&reply.chatId===chatId){ui.auto=reply.auto||null;send('load');}return;}
   const p=pending.get(reply.requestId);pending.delete(reply.requestId);
   if(!alive||!p||p.epoch!==epoch)return;
   if(p.type==='analyze'&&p.epoch===epoch)ui.analyzing=false;
@@ -526,6 +554,7 @@ export function setup(ctx){
   accepted=Math.max(accepted,p.sequence);chatId=reply.chatId;state=reply.state;recovery=!!reply.recovery;ui.injection=reply.injection||null;
   if(Number.isSafeInteger(reply.total)&&Array.isArray(reply.hidden))ui.counts[reply.chatId]={total:reply.total,hidden:reply.hidden.filter(Number.isSafeInteger)};
   if(reply.connections)ui.connections=reply.connections;
+  if(reply.auto){ui.auto=reply.auto;if(reply.auto.enabled&&!ui.connection){ui.connection=reply.auto.connection;ui.mode=reply.auto.mode;}}
   if(reply.json){ui.transfer=reply.json;ui.tab='settings';}
   if(reply.saved){ui.editor=null;if(p.type==='analyze')ui.tab='overview';}
   if(['reset','restoreBackup'].includes(p.type)){epoch++;pending.clear();ui.analyzing=false;ui.selected.clear();ui.editor=null;ui.limits={};ui.queries={};ui.queueLayer='all';ui.detail=null;}
@@ -534,7 +563,7 @@ export function setup(ctx){
  });
  const offSwitch=ctx.events.on('CHAT_SWITCHED',p=>{
   epoch++;chatId=p.chatId||null;state=null;recovery=false;pending.clear();
-  ui.countAsked=null;ui.analyzing=false;ui.selected.clear();ui.editor=null;ui.limits={};ui.queries={};ui.queueLayer='all';ui.detail=null;ui.transfer='';ui.status='';ui.injection=null;
+  ui.countAsked=null;ui.analyzing=false;ui.selected.clear();ui.editor=null;ui.limits={};ui.queries={};ui.queueLayer='all';ui.detail=null;ui.transfer='';ui.status='';ui.injection=null;ui.auto=null;
   view.render();if(chatId)send('load');
  });
  view.render();send('load');

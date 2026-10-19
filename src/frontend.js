@@ -9,6 +9,8 @@ export function setup(ctx){
  const send=(type,extra={})=>{const requestId=crypto.randomUUID();pending.set(requestId,{epoch,type,sequence:++serial});ctx.sendToBackend({requestId,type,chatId,revision:state?.revision,...extra});};
  const view=createView(root,{send,get:()=>({chatId,state,recovery}),ui});
  const offMessage=ctx.onBackendMessage(reply=>{
+  // Automatic analysis finished in the background: refresh the open chat only.
+  if(reply?.event==='autoAnalysis'&&!reply.requestId){if(alive&&reply.chatId&&reply.chatId===chatId){ui.auto=reply.auto||null;send('load');}return;}
   const p=pending.get(reply.requestId);pending.delete(reply.requestId);
   if(!alive||!p||p.epoch!==epoch)return;
   if(p.type==='analyze'&&p.epoch===epoch)ui.analyzing=false;
@@ -18,6 +20,7 @@ export function setup(ctx){
   accepted=Math.max(accepted,p.sequence);chatId=reply.chatId;state=reply.state;recovery=!!reply.recovery;ui.injection=reply.injection||null;
   if(Number.isSafeInteger(reply.total)&&Array.isArray(reply.hidden))ui.counts[reply.chatId]={total:reply.total,hidden:reply.hidden.filter(Number.isSafeInteger)};
   if(reply.connections)ui.connections=reply.connections;
+  if(reply.auto){ui.auto=reply.auto;if(reply.auto.enabled&&!ui.connection){ui.connection=reply.auto.connection;ui.mode=reply.auto.mode;}}
   if(reply.json){ui.transfer=reply.json;ui.tab='settings';}
   if(reply.saved){ui.editor=null;if(p.type==='analyze')ui.tab='overview';}
   if(['reset','restoreBackup'].includes(p.type)){epoch++;pending.clear();ui.analyzing=false;ui.selected.clear();ui.editor=null;ui.limits={};ui.queries={};ui.queueLayer='all';ui.detail=null;}
@@ -26,7 +29,7 @@ export function setup(ctx){
  });
  const offSwitch=ctx.events.on('CHAT_SWITCHED',p=>{
   epoch++;chatId=p.chatId||null;state=null;recovery=false;pending.clear();
-  ui.countAsked=null;ui.analyzing=false;ui.selected.clear();ui.editor=null;ui.limits={};ui.queries={};ui.queueLayer='all';ui.detail=null;ui.transfer='';ui.status='';ui.injection=null;
+  ui.countAsked=null;ui.analyzing=false;ui.selected.clear();ui.editor=null;ui.limits={};ui.queries={};ui.queueLayer='all';ui.detail=null;ui.transfer='';ui.status='';ui.injection=null;ui.auto=null;
   view.render();if(chatId)send('load');
  });
  view.render();send('load');

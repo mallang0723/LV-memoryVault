@@ -1,4 +1,4 @@
-import {empty,apply,clone,safe,parseCandidates,normalizeCandidates,skippedNotice,validate,inherit,review,fingerprint,publicItems,injectionText,MAX_INPUT_CHARS,sourceInput,selectSource,countOf} from './core.js';
+import {empty,apply,clone,safe,parseCandidates,normalizeCandidates,skippedNotice,validate,inherit,review,fingerprint,publicItems,injectionText,MAX_INPUT_CHARS,sourceInput,selectSource,countOf,validTimeZone} from './core.js';
 const validId=x=>typeof x==='string'&&/^[a-zA-Z0-9_-]{1,120}$/.test(x);
 // Lumiverse user IDs are URL-safe and up to 128 characters (host auth provisioning).
 const validUser=x=>typeof x==='string'&&/^[a-zA-Z0-9_-]{1,128}$/.test(x);
@@ -16,9 +16,31 @@ export const ANALYSIS_PROMPT=[
  '- Never leave relative time words (어제, 오늘, 내일, 방금, yesterday, today, just now) in text: rewrite them as absolute dates or times resolved against the in-story date or the send time.',
  '- Write text in the language of the source (Korean source, Korean text).'
 ].join('\n');
+// Automatic analysis (off by default, per chat). Settings, the last-analyzed marker and
+// the last run outcome live in chats/<id>/auto.json, apart from data.json, so changing
+// them never adds a revision or an undo step. Counting reads the host's own messages:
+// only user messages after the marker count, so swipes and regenerations (new variants
+// of an existing reply) never add to it.
+export const AUTO_EVERY=10,AUTO_MIN=3,AUTO_MAX=100,AUTO_DELAY_MS=1500;
+const autoPath=chatId=>'chats/'+chatId+'/auto.json';
+const autoOff=()=>({enabled:false,every:AUTO_EVERY,mode:'raw',connection:'',timeZone:null,marker:null,failed:null,last:null});
+const cleanMarker=m=>m&&typeof m==='object'&&Number.isSafeInteger(m.index)&&m.index>=-1?{id:validId(m.id)?m.id:null,index:m.index}:null;
+const cleanLast=l=>l&&typeof l==='object'&&Number.isFinite(l.at)?{at:l.at,ok:l.ok===true,added:Number.isSafeInteger(l.added)?l.added:0,text:String(l.text??'').slice(0,200),note:String(l.note??'').slice(0,300),error:String(l.error??'').slice(0,300)}:null;
+const validEvery=n=>Number.isSafeInteger(n)&&n>=AUTO_MIN&&n<=AUTO_MAX;
+function cleanAuto(v){
+ if(!v||typeof v!=='object')return autoOff();
+ const mode=['raw','quiet'].includes(v.mode)?v.mode:'raw',connection=validId(v.connection)?v.connection:'';
+ return {enabled:v.enabled===true&&!!connection,every:validEvery(v.every)?v.every:AUTO_EVERY,mode,connection,timeZone:validTimeZone(v.timeZone),marker:cleanMarker(v.marker),failed:cleanMarker(v.failed),last:cleanLast(v.last)};
+}
+export const publicAuto=a=>({enabled:a.enabled,every:a.every,mode:a.mode,connection:a.connection,last:a.last});
+const markerAt=(all,i)=>i>=0&&all[i]?{id:validId(all[i].id)?all[i].id:null,index:i}:{id:null,index:-1};
+// Marker position in the current chat: by message ID, else the stored position
+// clamped to the chat (deleted history never replays the whole chat).
+const markerIndex=(all,m)=>{if(!m)return -1;if(m.id){const i=all.findIndex(x=>x?.id===m.id);if(i>=0)return i;}return Math.min(m.index,all.length-1);};
+const userTurnsAfter=(all,i)=>all.slice(i+1).filter(m=>m?.is_user===true&&!m?.extra?.hidden).length;
 export const SKIP_NOTICE='이번 답변에는 기억을 넣지 못했습니다. 프롬프트에서 대화 기록의 출처를 확인할 수 없는 생성입니다(메시지를 하나로 합치는 프리셋, 대화 기록이 하나뿐인 이어쓰기 등). 보관함 패널의 \'최근 답변\' 표시로 다시 확인할 수 있습니다.';
-export function createService(api){
- const queues=new Map();
+export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
+ const queues=new Map(),inflight=new Set(),timers=new Map();
  // Last injection outcome per user/chat, shown in the panel, plus the public memory
  // count seen by authenticated panel requests. Both live only in this worker.
  const injections=new Map(), publicCounts=new Map(), warned=new Set();
@@ -37,15 +59,20 @@ export function createService(api){
   }
   return copy;
  };
+ const readAuto=async(chatId,user)=>{try{if(!await api.userStorage.exists(autoPath(chatId),user))return autoOff();return cleanAuto(safe(await api.userStorage.getJson(autoPath(chatId),{userId:user})));}catch{return autoOff();}};
+ const writeAuto=(chatId,user,value)=>api.userStorage.setJson(autoPath(chatId),safe(value),{userId:user});
  const read=async(key,user)=>{
   if(!await api.userStorage.exists(key,user))return null;
   const value=safe(await api.userStorage.getJson(key,{userId:user}));
   if(!Number.isSafeInteger(value.revision)||value.revision<0||!Array.isArray(value.undo)||value.undo.length>20)throw Error('저장 형식 오류: 원본/백업 보존');
   return validate(value);
  };
- async function run(request,user){
+ // `internal` is set only by the automatic analysis below; frontend messages reach
+ // run(payload,userId) with two arguments and cannot use the auto* types.
+ async function run(request,user,internal){
   if(!validUser(user))throw Error('인증된 사용자 문맥 없음');
   const r=safe(request);gate('chats');
+  if(['autoPrepare','autoFail','autoPropose'].includes(r?.type)&&!internal)throw Error('알 수 없는 작업');
   // `user` is the host-authenticated identity (frontend message routing or
   // interceptor context), never a payload field. Every host call below passes it,
   // so operator-scoped installs (explicit userId required) and user-scoped
@@ -58,6 +85,15 @@ export function createService(api){
   const task=prior.catch(()=>{}).then(async()=>{
    gate('chats');const chat=await api.chats.get(chatId,user);if(!chat)throw Error('채팅 소유권 확인 실패');
    const path='chats/'+chatId+'/data.json';
+   if(r.type==='autoPrepare')return autoPrepare(chatId,user);
+   if(r.type==='autoFail'){
+    const a=await readAuto(chatId,user);if(!a.enabled)return {skip:'off'};
+    // Failures wait for the next N user messages (counted from the failure point)
+    // instead of retrying on every reply. Input that can never fit moves the marker.
+    a.last={at:Date.now(),ok:false,added:0,text:internal.text||'',note:'',error:String(internal.error||'알 수 없는 오류')};
+    if(internal.advance){a.marker=internal.end;a.failed=null;}else a.failed=internal.end;
+    await writeAuto(chatId,user,a);return {auto:publicAuto(a)};
+   }
    if(['restoreBackup','reset'].includes(r.type)){
     if(r.confirmRecovery!==true)throw Error('복구/초기화 명시 확인 필요');
     const recovered=r.type==='reset'?empty():await read('chats/'+chatId+'/backup.json',user);
@@ -74,14 +110,35 @@ export function createService(api){
     }
    }
    const response=()=>({chatId,state,output:'답변할 때 승인한 공개 기억만 프롬프트에 넣습니다'});
-   if(r.type==='load')return response();
+   if(r.type==='load')return {...response(),auto:publicAuto(await readAuto(chatId,user))};
+   if(r.type==='autoSettings'){
+    // Separate file: no revision, no undo step, no data.json write.
+    const prev=await readAuto(chatId,user),every=Number(r.every),enabled=r.enabled===true;
+    if(!validEvery(every))throw Error('자동 분석 간격은 '+AUTO_MIN+'~'+AUTO_MAX+' 사이 정수로 입력하세요.');
+    const next={...prev,enabled,every};
+    if(enabled){
+     gate('generation');gate('chat_mutation');
+     if(!['raw','quiet'].includes(r.mode)||!validId(r.connection))throw Error('자동 분석을 켜려면 설정 탭에서 분석 모드와 모델 연결을 먼저 고르세요.');
+     if(r.mode==='raw')await rawTarget(r.connection,user);else if(!await api.connections.get(r.connection,user))throw Error('선택한 모델 연결을 찾을 수 없습니다.');
+     next.mode=r.mode;next.connection=r.connection;next.timeZone=validTimeZone(r.timeZone);
+     // Turning it on starts counting from now; earlier history is never sent automatically.
+     if(!prev.enabled){const all=await api.chat.getMessages(chatId);next.marker=markerAt(all,all.length-1);next.failed=null;}
+    }
+    await writeAuto(chatId,user,next);
+    return {...response(),auto:publicAuto(next),notice:enabled?'자동 분석 켜짐 · 지금부터 사용자 메시지 '+every+'개마다 새 대화를 분석해 검토 대기에 후보로 넣습니다':'자동 분석 꺼짐'};
+   }
    if(r.type==='connections'){gate('generation');return {...response(),connections:(await api.connections.list(user)).map(x=>({id:x.id,name:x.name,model:x.model}))};}
    if(r.type==='export')return {...response(),json:JSON.stringify({version:1,items:state.items,candidates:state.candidates},null,2)};
    // Count and hidden positions only: message bodies never leave the worker for the panel.
    if(r.type==='count'){gate('chat_mutation');return {...response(),...countOf(await api.chat.getMessages(chatId))};}
-   if(r.revision!==state.revision)throw Error('revision 충돌: 새로고침 후 다시 편집');
-   let next,notice='',count=null;
-   if(r.type==='analyze'){
+   if(r.type!=='autoPropose'&&r.revision!==state.revision)throw Error('revision 충돌: 새로고침 후 다시 편집');
+   let next,notice='',count=null,auto=null;
+   if(r.type==='autoPropose'){
+    // Model output prepared outside the queue; candidates only, scope forced unknown.
+    auto=await readAuto(chatId,user);if(!auto.enabled)return {skip:'off'};
+    notice=internal.notice||'';count={analyzed:'자동 분석 · '+internal.text,added:internal.items.length};
+    next=apply(state,{type:'propose',items:internal.items.map(x=>({...x,id:crypto.randomUUID(),scope:'unknown',evidence:internal.evidence,source:'자동 분석 모델 후보 · '+internal.text}))});
+   }else if(r.type==='analyze'){
     // One request: the scope (recent N or numeric ranges) is resolved here against the
     // host's own messages; the panel never sends message IDs or text.
     gate('generation');gate('chat_mutation');
@@ -127,9 +184,66 @@ export function createService(api){
    try{await api.userStorage.setJson(path,next,{userId:user});}catch{
     const actual=await read(path,user);if(JSON.stringify(actual)!==JSON.stringify(next))throw Error('저장 미확정: 재전송하지 말고 새로고침/백업 확인');
    }
-   state=next;return {...response(),saved:true,...(count||{}),...(count?{notice:count.analyzed+' 분석 · 후보 '+count.added+'개 추가'+(notice?' · '+notice:'')+' · 검토 대기에서 확인 후 승인하세요'}:notice?{notice:'저장 완료 · '+notice}:{})};
+   if(auto){auto.marker=internal.end;auto.failed=null;auto.last={at:Date.now(),ok:true,added:count.added,text:internal.text,note:notice,error:''};try{await writeAuto(chatId,user,auto);}catch{}}
+   state=next;return {...response(),saved:true,...(auto?{auto:publicAuto(auto)}:{}),...(count||{}),...(count?{notice:count.analyzed+' 분석 · 후보 '+count.added+'개 추가'+(notice?' · '+notice:'')+' · 검토 대기에서 확인 후 승인하세요'}:notice?{notice:'저장 완료 · '+notice}:{})};
   });queues.set(key,task);try{const out=await task;if(out?.state)remember(publicCounts,key,publicItems(out.state).length);const injection=injections.get(key);return injection?{...out,injection}:out;}finally{if(queues.get(key)===task)queues.delete(key);}
  }
+ // Runs inside the chat queue after the ownership check: decides whether N user
+ // messages have accumulated and snapshots exactly the messages since the marker.
+ async function autoPrepare(chatId,user){
+  const a=await readAuto(chatId,user);if(!a.enabled)return {skip:'off'};
+  gate('generation');gate('chat_mutation');
+  const all=await api.chat.getMessages(chatId),from=markerIndex(all,a.marker),end=markerAt(all,all.length-1);
+  const users=userTurnsAfter(all,from);
+  if(users<a.every)return {skip:'count',users};
+  if(a.failed&&userTurnsAfter(all,markerIndex(all,a.failed))<a.every)return {skip:'backoff',users};
+  const picked=all.map((m,index)=>({m,index})).filter(({m,index})=>index>from&&!m?.extra?.hidden);
+  // Over the input limit: the oldest messages are dropped and the marker still moves
+  // to the end, so the gap is reported once instead of blocking every later run.
+  let input=sourceInput(picked.map(x=>x.m),a.timeZone),dropped=0;
+  while(input.length>MAX_INPUT_CHARS&&picked.length>1){picked.shift();dropped++;input=sourceInput(picked.map(x=>x.m),a.timeZone);}
+  const text='대화 '+(picked[0].index+1)+'–'+(picked.at(-1).index+1)+' ('+picked.length+'개)'+(dropped?' · 앞 '+dropped+'개는 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자 한도를 넘어 생략':'');
+  if(input.length>MAX_INPUT_CHARS)return {fail:'원문 크기 초과: 메시지 하나가 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자 한도를 넘어 이번 구간을 건너뜁니다.',end,text};
+  const evidence=await Promise.all(picked.map(async({m,index})=>({id:m.id,index,fingerprint:await fingerprint(m.content)})));
+  return {prepared:{mode:a.mode,connection:a.connection,input,evidence,text,end,users}};
+ }
+ const notify=(user,chatId,auto)=>{try{api.sendToFrontend?.({event:'autoAnalysis',chatId,auto},user);}catch{}};
+ // One automatic run per user/chat at a time; the model call happens outside the chat
+ // queue so the interceptor (and so the next RP reply) never waits for it.
+ async function autoCheck(chatId,user){
+  if(!validUser(user)||!validId(chatId))return {skip:'invalid'};
+  const key=user+':'+chatId;if(inflight.has(key))return {skip:'busy'};inflight.add(key);
+  try{
+   let p;try{p=await run({type:'autoPrepare',chatId},user,true);}catch(error){return {skip:'error',error:error.message};}
+   if(p.fail){const f=await run({type:'autoFail',chatId},user,{error:p.fail,end:p.end,text:p.text,advance:true});notify(user,chatId,f.auto);return {error:p.fail};}
+   if(!p.prepared)return p;
+   const x=p.prepared;
+   try{
+    gate('generation');const target=x.mode==='raw'?await rawTarget(x.connection,user):{};
+    const generated=await api.generate[x.mode]({messages:[{role:'system',content:ANALYSIS_PROMPT},{role:'user',content:x.input}],connection_id:x.connection,userId:user,...target});
+    const normalized=normalizeCandidates(parseCandidates(generated?.content));
+    if(normalized.total&&!normalized.items.length)throw Error('모델 응답의 후보 '+normalized.total+'개가 모두 형식 오류입니다(첫 항목: '+normalized.skipped[0].reason+').');
+    const out=await run({type:'autoPropose',chatId},user,{...x,items:normalized.items,notice:skippedNotice(normalized)});
+    if(out.auto)notify(user,chatId,out.auto);
+    return out.skip?out:{ok:true,added:normalized.items.length};
+   }catch(error){
+    try{const f=await run({type:'autoFail',chatId},user,{error:error.message,end:x.end,text:x.text});if(f.auto)notify(user,chatId,f.auto);}catch{}
+    return {error:error.message};
+   }
+  }finally{inflight.delete(key);}
+ }
+ // Host GENERATION_ENDED (payload, userId). Only finished replies count; failed,
+ // impersonate and quiet generations are ignored. Bursts (swipes, regenerations)
+ // are coalesced per chat, and the check runs after the event, never inside it.
+ function onGenerationEnded(payload,user){
+  const chatId=payload?.chatId;
+  if(!payload||payload.error||payload.errorCode||typeof payload.messageId!=='string'||!payload.messageId||['impersonate','quiet'].includes(payload.generationType))return Promise.resolve({skip:'event'});
+  if(!validUser(user)||!validId(chatId))return Promise.resolve({skip:'invalid'});
+  const key=user+':'+chatId,prev=timers.get(key);
+  if(prev){clearTimeout(prev.timer);prev.done({skip:'debounced'});}
+  return new Promise(done=>{const timer=setTimeout(()=>{timers.delete(key);autoCheck(chatId,user).then(done,error=>done({error:error?.message}));},autoDelayMs);timers.set(key,{timer,done});});
+ }
+ const stop=()=>{for(const t of timers.values()){clearTimeout(t.timer);t.done({skip:'stopped'});}timers.clear();};
  async function intercept(messages,context){
   try{
   gate('interceptor');gate('chat_mutation');
@@ -174,5 +288,5 @@ export function createService(api){
   return {messages:items.length?[...messages,{role:'system',content:injectionText(items)}]:messages};
   }catch{return {messages};}
  }
- return {run,intercept};
+ return {run,intercept,onGenerationEnded,autoCheck,stop};
 }
