@@ -1,5 +1,5 @@
 import {vaultStyle} from './vault-style.js';
-import {publicItems,selectSafeCandidates,candidateRisks,injectionText,MAX_INPUT_CHARS,MAX_RANGES,DEFAULT_RECENT,sourceSummary,resolveScope,nextRange,spanLabel,rangeStatus,localTimeZone,diagnose,sameBase,layerNames} from './core.js';
+import {publicItems,selectSafeCandidates,candidateRisks,injectionText,MAX_INPUT_CHARS,MAX_RANGES,DEFAULT_RECENT,sourceSummary,resolveScope,nextRange,spanLabel,rangeStatus,localTimeZone,diagnose,sameBase,layerNames,LOOM_CAP} from './core.js';
 const tabs=[['overview','개요'],['promises','약속'],['flows','진행 흐름'],['anchors','기억 앵커'],['scenes','장면 기억'],['elements','요소 기억'],['wiki','이야기 위키']];
 const names=Object.fromEntries(tabs);
 const hasLifecycle=layer=>['promises','flows'].includes(layer);
@@ -215,7 +215,7 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
    ui.checking=true;run.disabled=true;run.textContent='점검 중…';
    send('health',{mode:ui.mode||'raw',connection:ui.connection,timeZone:localTimeZone()});
   },c,'lv-run');run.dataset.run='health';run.disabled=!!ui.checking;
-  el('small','누르면 비밀·인물 제한·보류를 뺀 현재 기억과 최근 대화 원문(합쳐서 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자까지)을 설정 탭의 모델 연결로 보내 중복·모순·해소된 상태·지켜진 약속·너무 긴 기억을 찾습니다. 결과는 제안으로만 오고, 체크한 것만 적용합니다. 삭제는 제안하지 않습니다.',c,'mmc-muted');
+  el('small','누르면 비밀·인물 제한·보류를 뺀 현재 기억과 최근 대화 원문(합쳐서 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자까지)을 설정 탭의 모델 연결로 보내 중복·모순·해소된 상태·지켜진 약속·너무 긴 기억을 찾습니다. 루미버스 요약 참고가 켜져 있으면 남는 한도 안에서 이 채팅의 요약도 참고용으로 함께 보냅니다. 결과는 제안으로만 오고, 체크한 것만 적용합니다. 삭제는 제안하지 않습니다.',c,'mmc-muted');
   proposals(c,state);
  }
  const actionNames={update:'고쳐 쓰기',complete:'완료로',archive:'보관 (보류·주입 제외)'};
@@ -377,11 +377,13 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
    run.textContent='분석 중…';
    send('analyze',{source:src.scope==='last'?{scope:'last',n:src.n}:{scope:'range',ranges:src.ranges.map(r=>({start:r.start,end:r.end}))},...opts});
   },c,'mmc-primary lv-run');run.dataset.run='analyze';run.setAttribute('aria-label','분석 실행');
-  el('small','누르면 고른 범위의 원문을 설정한 모델로 바로 보냅니다(한 번에 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자까지). 비밀이 담긴 대화는 범위에서 빼세요. 결과는 후보로만 들어가고 자동 승인하지 않습니다.',c,'mmc-muted');
+  el('small','누르면 고른 범위의 원문을 설정한 모델로 바로 보냅니다(한 번에 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자까지). 비밀이 담긴 대화는 범위에서 빼세요. 루미버스 요약 참고가 켜져 있으면 이 채팅의 요약도 참고용으로 함께 보냅니다. 결과는 후보로만 들어가고 자동 승인하지 않습니다.',c,'mmc-muted');
   const queue=row(c);el('span','검토 대기 후보 '+state.candidates.length+'개',queue);button('검토 대기 열기',()=>go('overview'),queue,'mmc-sm');
   function update(){
    const s=!chatId?{ok:false,error:'채팅을 먼저 여세요.'}:count?sourceSummary(src.scope==='last'?{scope:'last',n:src.n}:{scope:'range',ranges:src.ranges},count.total,count.hidden):{ok:true,pending:true};
-   summary.textContent=s.pending?'대화 개수 확인 중…':s.ok?s.text:'분석할 대화 없음';summary.dataset.sourceSummary=s.ok&&!s.pending?'ok':s.pending?'pending':'error';
+   // The service reports the summary option per chat (on/off and at most how much is sent).
+   const loom=ui.loom?.enabled?' · '+(ui.loom.chars?'루미버스 요약 참고 ('+ui.loom.chars.toLocaleString('en-US')+'자)':'요약 없음'):'';
+   summary.textContent=s.pending?'대화 개수 확인 중…':s.ok?s.text+loom:'분석할 대화 없음';summary.dataset.sourceSummary=s.ok&&!s.pending?'ok':s.pending?'pending':'error';
    const notes=s.ok?(s.warnings||[]):[s.error];warn.textContent=notes.join(' ');warn.hidden=!notes.length;
    total.textContent=count?'전체 '+count.total+'개'+(count.hidden.length?' · 숨김 '+count.hidden.length+'개는 분석에서 빠집니다':'')+' · 번호는 채팅 순서 기준':'';
    run.disabled=!!ui.analyzing||(!s.ok&&!s.pending);
@@ -420,6 +422,11 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
   const connection=select('모델 연결',[['','연결을 선택하세요'],...ui.connections.map(x=>[x.id,x.name+' · '+(x.model||'(모델 미지정)')])],c,ui.connection||'');connection.onchange=()=>ui.connection=connection.value;
   button('모델 목록 새로고침',()=>send('connections'),c,'mmc-sm');
   el('p','분석 버튼을 누르면 고른 범위의 원문이 이 연결로 바로 전송됩니다. 비밀이 담긴 대화는 범위에서 빼세요. 모델 결과는 후보로만 들어가며 자동 승인하지 않습니다. 선택은 패널을 다시 불러오기 전까지 유지됩니다.',c,'lv-warning');
+  // Lumiverse's own chat summary as reference. Saved on the server for all chats (default on).
+  const loom=check('루미버스 요약(Loom) 참고',c,ui.loom?.enabled!==false);loom.dataset.loom='toggle';
+  loom.onchange=()=>send('loomSettings',{enabled:loom.checked});
+  el('small','켜면 분석·자동 분석·기억 점검 때 루미버스가 이 채팅에 저장한 요약(Summary)을 원문 뒤에 참고용으로 함께 보냅니다. 최대 '+LOOM_CAP.toLocaleString('en-US')+'자, 넘으면 앞부분을 자르고, 원문을 먼저 채운 뒤 남는 한도만 씁니다. 요약은 날짜·흐름 참고용이며 후보는 고른 원문에서만 뽑고, 원문과 다르면 원문이 우선합니다. 요약은 기억으로 저장하지 않습니다. 모든 채팅에 공통입니다.',c,'mmc-muted');
+  el('p','요약에는 고른 범위 밖의 대화 내용도 담겨 있습니다. 요약에 비밀이 들어 있다면 이 설정을 끄세요.',c,'lv-warning');
   autoSettings(main);
  }
  // Per-chat automatic analysis. Saved on the server apart from memories (no undo step).
@@ -428,7 +435,7 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
   const toggle=check('사용자 메시지 N개마다 자동 분석',c,!!a.enabled);
   if(!a.enabled&&!ui.connection){toggle.disabled=true;el('small','켜려면 위에서 모델 연결을 먼저 고르세요.',c,'mmc-muted');}
   const l=el('label',undefined,c,'lv-num');el('span','사용자 메시지',l);const n=el('input',undefined,l);n.type='text';n.setAttribute('inputmode','numeric');n.setAttribute('pattern','[0-9]*');n.setAttribute('aria-label','자동 분석 간격');n.value=String(a.every||10);n.oninput=()=>{n.value=n.value.replace(/[^0-9]/g,'');};el('span','개마다 (3–100)',l);
-  el('p','켜면 마지막 자동 분석 뒤의 대화 원문(한 번에 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자까지)이 위에서 고른 모델 연결로 자동 전송됩니다.',c,'lv-warning');
+  el('p','켜면 마지막 자동 분석 뒤의 대화 원문(한 번에 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자까지)이 위에서 고른 모델 연결로 자동 전송됩니다. 루미버스 요약 참고가 켜져 있으면 이 채팅의 요약도 남는 한도 안에서 함께 보냅니다.',c,'lv-warning');
   const save=button('자동 분석 저장',()=>{
    const every=Number(n.value);
    if(!Number.isInteger(every)||every<3||every>100){ui.note('자동 분석 간격은 3~100 사이 정수로 입력하세요.');return;}

@@ -30,6 +30,7 @@ export function setup(ctx){
   accepted=Math.max(accepted,p.sequence);chatId=reply.chatId;state=reply.state;recovery=!!reply.recovery;ui.injection=reply.injection||null;
   if(Number.isSafeInteger(reply.total)&&Array.isArray(reply.hidden))ui.counts[reply.chatId]={total:reply.total,hidden:reply.hidden.filter(Number.isSafeInteger)};
   if(reply.connections)ui.connections=reply.connections;
+  if(reply.loom&&typeof reply.loom.enabled==='boolean')ui.loom={enabled:reply.loom.enabled,chars:Number.isSafeInteger(reply.loom.chars)?reply.loom.chars:0};
   if(reply.auto){ui.auto=reply.auto;if(reply.auto.enabled&&!ui.connection){ui.connection=reply.auto.connection;ui.mode=reply.auto.mode;}}
   if('health' in reply){const prev=ui.health,h=reply.health||null;ui.health=h;
    const open=(h?.proposals||[]).filter(x=>!x.conflict).map(x=>x.id);
@@ -43,7 +44,7 @@ export function setup(ctx){
  });
  const offSwitch=ctx.events.on('CHAT_SWITCHED',p=>{
   epoch++;chatId=p.chatId||null;state=null;recovery=false;pending.clear();
-  ui.countAsked=null;ui.analyzing=false;ui.batch=null;ui.selected.clear();ui.editor=null;ui.limits={};ui.queries={};ui.queueLayer='all';ui.detail=null;ui.transfer='';ui.status='';ui.injection=null;ui.auto=null;ui.health=null;ui.healthSelected.clear();ui.checking=false;
+  ui.countAsked=null;ui.analyzing=false;ui.batch=null;ui.selected.clear();ui.editor=null;ui.limits={};ui.queries={};ui.queueLayer='all';ui.detail=null;ui.transfer='';ui.status='';ui.injection=null;ui.auto=null;ui.loom=null;ui.health=null;ui.healthSelected.clear();ui.checking=false;
   view.render();if(chatId)send('load');
  });
  view.render();send('load');

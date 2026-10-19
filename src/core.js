@@ -261,6 +261,31 @@ export function sourceInput(messages,zone){
  const tz=validTimeZone(zone),header='[메시지 전송 시각 기준: '+(tz||'UTC (사용자 시간대 미확인)')+']';
  return [header,...messages.map(m=>{const t=sentStamp(m,tz);return (t?'[전송 '+t+'] ':'[전송 시각 미상] ')+String(m.content??'');})].join('\n\n');
 }
+// Lumiverse's own chat summary (Loom Summary): one text per chat, stored by the host in
+// chat.metadata.loom_summary (read through chats.get, the existing `chats` permission).
+// Reference only, never a memory: it goes after the raw input, only into the room the
+// raw input leaves under MAX_INPUT_CHARS, capped at LOOM_CAP and cut from the start so
+// the most recent part stays. Untrusted text: non-strings and anything over 2MB read as
+// no summary, control characters are dropped and block markers removed so it can never
+// close its own block.
+export const LOOM_CAP=8000,LOOM_MIN=200;
+const LOOM_HEAD='\n\n[LUMIVERSE SUMMARY]\n',LOOM_TAIL='\n[/LUMIVERSE SUMMARY]',LOOM_CUT='…(앞부분 생략)\n';
+export function loomText(chat){
+ const v=chat?.metadata?.loom_summary;
+ if(typeof v!=='string'||new TextEncoder().encode(v).byteLength>2000000)return '';
+ return v.replace(/\r\n?/g,'\n').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g,'').replace(/\[\s*\/?\s*LUMIVERSE SUMMARY[^\]\n]*\]/gi,'').trim();
+}
+export function loomBlock(text,room=Infinity){
+ if(!text)return {text:'',chars:0};
+ const fit=Math.min(LOOM_CAP,room-LOOM_HEAD.length-LOOM_TAIL.length);
+ if(text.length<=fit)return {text:LOOM_HEAD+text+LOOM_TAIL,chars:text.length};
+ const keep=fit-LOOM_CUT.length;
+ if(keep<LOOM_MIN)return {text:'',chars:0,omitted:true};
+ const body=text.slice(-keep).replace(/^[\udc00-\udfff]/,'');
+ return {text:LOOM_HEAD+LOOM_CUT+body+LOOM_TAIL,chars:body.length,truncated:true};
+}
+// Shown after the scope in the panel and in notices; empty when the option is off.
+export const loomLabel=(on,b)=>!on?'':b.chars?'루미버스 요약 참고 ('+b.chars.toLocaleString('en-US')+'자'+(b.truncated?', 앞부분 생략':'')+')':b.omitted?'루미버스 요약 생략 (원문이 한도에 가까움)':'요약 없음';
 // Memory check (기억 점검). The model sees eligible memories under short aliases (M1,
 // M2, …) and may only propose update / complete / archive for those aliases; anything
 // else is skipped with a reason. Each proposal keeps a snapshot of its target so a
