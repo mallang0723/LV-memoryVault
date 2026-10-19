@@ -14,9 +14,11 @@ test('drawer forwards approval check and exposes explicit recovery after failed 
  const {document}=parseHTML('<html><body></body></html>');globalThis.document=document;
  const root=document.createElement('div'),sent=[];let listener;
  const cleanup=setup({ui:{registerDrawerTab:()=>({root,destroy(){}})},sendToBackend:r=>sent.push(r),onBackendMessage:fn=>{listener=fn;return()=>{};},events:{on:()=>()=>{}}});
- listener({requestId:sent[0].requestId,ok:true,chatId:'a',state:{revision:0,items:[],candidates:[]}});
- root.querySelector('[aria-label="공개 범위 확대 확인"]').checked=true;
- [...root.querySelectorAll('button')].find(x=>x.textContent==='선택 승인').click();assert.equal(sent.at(-1).confirmPublic,true);
+ listener({requestId:sent[0].requestId,ok:true,chatId:'a',state:{revision:0,items:[],candidates:[{id:'c',layer:'promises',text:'후보',scope:'unknown',evidence:[]}]}});
+ const pick=root.querySelector('[aria-label="선택: 후보"]');pick.checked=true;pick.onchange();
+ [...root.querySelectorAll('button')].find(x=>x.textContent==='선택 승인').click();assert.deepEqual([sent.at(-1).type,sent.at(-1).scope,sent.at(-1).confirmPublic],['approve','public',true]);
+ pick.checked=true;pick.onchange();
+ [...root.querySelectorAll('button')].find(x=>x.textContent==='선택 비공개로 보관').click();assert.deepEqual([sent.at(-1).type,sent.at(-1).scope,sent.at(-1).confirmPublic],['approve','unknown',undefined]);
  [...root.querySelectorAll('button')].find(x=>x.textContent==='새로고침').click();
  listener({requestId:sent.at(-1).requestId,ok:true,chatId:'a',state:null,recovery:true,output:'손상'});
  const button=[...root.querySelectorAll('button')].find(x=>x.textContent==='직전 백업 복원');assert.ok(button);

@@ -56,8 +56,8 @@ test('overview: one-line summary chips, paged review queue with layer and text f
  v.root.querySelector('[data-layer="wiki"]').click();assert.equal(queue(),PAGE);assert.match(v.more('queue').textContent,/20\/50/);
  v.search('후보 검색','위키 049');assert.equal(queue(),1);
  v.root.querySelector('[aria-label="선택: 위키 049"]').checked=true;v.root.querySelector('[aria-label="선택: 위키 049"]').onchange();
- v.root.querySelector('[aria-label="공개 범위 확대 확인"]').checked=true;v.click('선택 승인');
- assert.deepEqual(v.sent.at(-1).ids,['w49']);assert.equal(v.sent.at(-1).confirmPublic,true);
+ assert.equal(v.root.querySelector('[aria-label="공개 범위 확대 확인"]'),null,'approval needs no extra checkbox');v.click('선택 승인');
+ assert.deepEqual(v.sent.at(-1).ids,['w49']);assert.equal(v.sent.at(-1).scope,'public');assert.equal(v.sent.at(-1).confirmPublic,true);
  v.click('위키 049');assert.ok(v.root.textContent.includes('끝표시049'));
  v.click('주입 대상 보기');assert.equal(v.root.querySelectorAll('[data-list="inject"] .lv-compact').length,PAGE);
  v.cleanup();
