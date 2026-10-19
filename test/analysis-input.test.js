@@ -1,6 +1,6 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
 import {parseHTML} from 'linkedom';
-import {sentStamp,sourceInput,inputSize,validTimeZone,parseCandidates,normalizeCandidates,fingerprint,MAX_INPUT_CHARS,layers} from '../src/core.js';
+import {sentStamp,sourceInput,validTimeZone,parseCandidates,normalizeCandidates,fingerprint,MAX_INPUT_CHARS,layers} from '../src/core.js';
 import {createService,ANALYSIS_PROMPT} from '../src/service.js';
 import {setup} from '../src/frontend.js';
 
@@ -39,22 +39,20 @@ const chat=[{id:'m1',content:'어제 약속했잖아.',send_date:evening,extra:{
 
 for(const mode of ['raw','quiet'])test(mode+' analysis input stamps each message with its send time; evidence stays on the original text',async()=>{
  const f=fake(chat,'[{"layer":"promises","text":"[기록 2026-10-18 19:10] 공책 반환 약속","scope":"unknown"}]'),s=createService(f.api);
- const src=await s.run({type:'sources',chatId:'a'},'owner');assert.deepEqual(src.messages.map(m=>m.send_date),[evening,lateNight*1000]);
- const {preview}=await s.run({type:'preview',chatId:'a',mode,connection:'c1',ids:['m1','m2'],timeZone:'Asia/Seoul'},'owner');
- assert.equal(preview.input,'[메시지 전송 시각 기준: Asia/Seoul]\n\n[전송 2026-10-18 19:10] 어제 약속했잖아.\n\n[전송 2026-10-18 01:30] 내일 돌려줄게.');
- assert.equal(preview.input.length,inputSize(src.messages,['m1','m2'],'Asia/Seoul'));
- const r=await s.run({type:'analyze',chatId:'a',revision:0,token:preview.token,confirm:true},'owner');
+ const r=await s.run({type:'analyze',chatId:'a',revision:0,mode,connection:'c1',source:{scope:'range',ranges:[{start:1,end:2}]},timeZone:'Asia/Seoul'},'owner');
  assert.equal(f.calls.length,1);assert.equal(f.calls[0].kind,mode);
- assert.equal(f.calls[0].input.messages[0].content,ANALYSIS_PROMPT);assert.equal(f.calls[0].input.messages[1].content,preview.input);
- assert.equal(r.state.candidates.length,1);assert.equal(r.notice,undefined);
+ assert.equal(f.calls[0].input.messages[0].content,ANALYSIS_PROMPT);assert.equal(f.calls[0].input.messages[1].content,'[메시지 전송 시각 기준: Asia/Seoul]\n\n[전송 2026-10-18 19:10] 어제 약속했잖아.\n\n[전송 2026-10-18 01:30] 내일 돌려줄게.');
+ assert.equal(r.state.candidates.length,1);assert.equal(r.notice,'대화 1–2 (2개) 분석 · 후보 1개 추가 · 검토 대기에서 확인 후 승인하세요');
+ assert.equal(r.total,2);assert.deepEqual(r.hidden,[]);
  assert.deepEqual(r.state.candidates[0].evidence.map(e=>e.fingerprint),[await fingerprint(chat[0].content),await fingerprint(chat[1].content)]);
 });
 
 test('input cap counts the time stamps, not only the raw message text',async()=>{
  const half='x'.repeat(29990),msgs=[{id:'m1',content:half,send_date:evening},{id:'m2',content:half,send_date:evening}];
- assert.ok(half.length*2+2<=MAX_INPUT_CHARS);assert.ok(inputSize(msgs,['m1','m2'],'Asia/Seoul')>MAX_INPUT_CHARS);
- const s=createService(fake(msgs,'[]').api);
- await assert.rejects(()=>s.run({type:'preview',chatId:'a',mode:'raw',connection:'c1',ids:['m1','m2'],timeZone:'Asia/Seoul'},'owner'),/원문 크기 초과: 선택 입력 60,0\d\d자/);
+ assert.ok(half.length*2+2<=MAX_INPUT_CHARS);assert.ok(sourceInput(msgs,'Asia/Seoul').length>MAX_INPUT_CHARS);
+ const f=fake(msgs,'[]'),s=createService(f.api);
+ await assert.rejects(()=>s.run({type:'analyze',chatId:'a',revision:0,mode:'raw',connection:'c1',source:{scope:'last',n:2},timeZone:'Asia/Seoul'},'owner'),/원문 크기 초과: 대화 1–2 \(2개\) 입력 60,0\d\d자 \/ 한도 60,000자/);
+ assert.equal(f.calls.length,0);
 });
 
 test('model output variants are normalized',()=>{
@@ -86,22 +84,19 @@ test('dangerous keys and the size limit still reject the whole response',()=>{
 
 test('partial format errors save the usable candidates and report the excluded count',async()=>{
  const f=fake(chat,'{"candidates":[{"layer":"약속","content":"공책","scope":"public"},{"layer":"memo","text":"x"},{"layer":"Scenes","summary":"장면"}]}'),s=createService(f.api);
- const {preview}=await s.run({type:'preview',chatId:'a',mode:'raw',connection:'c1',ids:['m1']},'owner');
- const r=await s.run({type:'analyze',chatId:'a',revision:0,token:preview.token,confirm:true},'owner');
+ const r=await s.run({type:'analyze',chatId:'a',revision:0,mode:'raw',connection:'c1',source:{scope:'range',ranges:[{start:1,end:1}]}},'owner');
  assert.deepEqual(r.state.candidates.map(x=>[x.layer,x.text,x.scope]),[['promises','공책','unknown'],['scenes','장면','unknown']]);
- assert.equal(r.notice,'저장 완료 · 3개 중 1개 형식 오류로 제외(예: 2번째 항목 필드 layer 값 memo 인식 불가)');
+ assert.equal(r.notice,'대화 1 (1개) 분석 · 후보 2개 추가 · 3개 중 1개 형식 오류로 제외(예: 2번째 항목 필드 layer 값 memo 인식 불가) · 검토 대기에서 확인 후 승인하세요');
 });
 
 test('when every item fails, the first reason and the response head are shown',async()=>{
  const raw='[{"kind":"promise","body":"공책"},{"layer":"memo","text":"x"}]'+' '.repeat(10)+'z'.repeat(200);
  const f=fake(chat,raw),s=createService(f.api);
- const {preview}=await s.run({type:'preview',chatId:'a',mode:'raw',connection:'c1',ids:['m1']},'owner');
- await assert.rejects(()=>s.run({type:'analyze',chatId:'a',revision:0,token:preview.token,confirm:true},'owner'),e=>{
+ await assert.rejects(()=>s.run({type:'analyze',chatId:'a',revision:0,mode:'raw',connection:'c1',source:{scope:'last',n:1}},'owner'),e=>{
   assert.match(e.message,/후보 2개가 모두 형식 오류입니다\(첫 항목: 필드 layer 누락\)/);
   assert.ok(e.message.includes('응답 앞부분: '+raw.slice(0,120)+'…'));return true;});
  const empty=fake(chat,'[]'),s2=createService(empty.api);
- const p2=(await s2.run({type:'preview',chatId:'a',mode:'raw',connection:'c1',ids:['m1']},'owner')).preview;
- const ok=await s2.run({type:'analyze',chatId:'a',revision:0,token:p2.token,confirm:true},'owner');assert.equal(ok.state.candidates.length,0);assert.equal(ok.notice,undefined);
+ const ok=await s2.run({type:'analyze',chatId:'a',revision:0,mode:'raw',connection:'c1',source:{scope:'last',n:1}},'owner');assert.equal(ok.state.candidates.length,0);assert.match(ok.notice,/후보 0개 추가/);
 });
 
 test('the panel shows the exclusion notice instead of a bare save message',()=>{
@@ -111,11 +106,10 @@ test('the panel shows the exclusion notice instead of a bare save message',()=>{
  const state={revision:0,items:[],candidates:[],undo:[]};
  listener({requestId:sent[0].requestId,ok:true,chatId:'a',state});
  const status=()=>root.querySelector('[role=status]').textContent;
- [...root.querySelectorAll('button')].find(x=>x.textContent==='약속').click();[...root.querySelectorAll('button')].find(x=>x.textContent==='원문에서 정리').click();
- [...root.querySelectorAll('button')].find(x=>x.textContent==='원문 목록 읽기').click();
+ [...root.querySelectorAll('button')].find(x=>x.textContent==='분석').click();
  listener({requestId:sent.at(-1).requestId,ok:true,chatId:'a',state,saved:true,notice:'저장 완료 · 3개 중 1개 형식 오류로 제외(예: 2번째 항목 필드 layer 누락)'});
  assert.match(status(),/3개 중 1개 형식 오류로 제외/);
- [...root.querySelectorAll('button')].find(x=>x.textContent==='원문 목록 읽기').click();
+ [...root.querySelectorAll('button')].find(x=>x.textContent==='새로고침').click();
  listener({requestId:sent.at(-1).requestId,ok:true,chatId:'a',state:{...state,revision:1},saved:true});
  assert.equal(status(),'저장 완료');cleanup();
 });

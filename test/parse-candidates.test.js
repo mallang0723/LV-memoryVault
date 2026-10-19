@@ -40,7 +40,7 @@ test('dangerous keys are still rejected, not skipped',()=>{
 for(const mode of ['raw','quiet'])test(mode+' analyze accepts fenced output with reasoning',async()=>{
  const f=fake();f.a.connections={get:async id=>({id,name:'n',provider:'p',model:'m'})};
  f.a.generate[mode]=async()=>({content:'<think>hmm</think>\n```json\n'+arr+'\n```'});
- const s=createService(f.a),{preview}=await s.run({type:'preview',chatId:'a',mode,connection:'conn',ids:['m']},'owner');
- const r=await s.run({type:'analyze',chatId:'a',revision:0,token:preview.token,confirm:true},'owner');
+ const s=createService(f.a);
+ const r=await s.run({type:'analyze',chatId:'a',revision:0,mode,connection:'conn',source:{scope:'last',n:2}},'owner');
  assert.equal(r.state.candidates.length,1);assert.equal(r.state.candidates[0].text,'blue notebook [kept]');
 });

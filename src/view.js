@@ -1,12 +1,10 @@
 import {vaultStyle} from './vault-style.js';
-import {publicItems,selectSafeCandidates,injectionText,MAX_INPUT_CHARS,sourceNumber,rangeStatus,rangeIds,effectiveSelection,recentIds,inputSize,localTimeZone} from './core.js';
+import {publicItems,selectSafeCandidates,injectionText,MAX_INPUT_CHARS,MAX_RANGES,DEFAULT_RECENT,sourceSummary,localTimeZone} from './core.js';
 const tabs=[['overview','개요'],['promises','약속'],['flows','진행 흐름'],['anchors','기억 앵커'],['scenes','장면 기억'],['elements','요소 기억'],['wiki','이야기 위키']];
 const names=Object.fromEntries(tabs);
 const hasLifecycle=layer=>['promises','flows'].includes(layer);
 // Lists render at most PAGE rows at a time; "더 보기" adds another PAGE.
 export const PAGE=20;
-// One-line summary of a chat message: markup tags removed, whitespace collapsed.
-export const sourceLine=(text,n=40)=>clip(String(text??'').replace(/<[^>]*>/g,' '),n);
 const clip=(s,n=60)=>{s=String(s??'').replace(/\s+/g,' ').trim();return s.length>n?s.slice(0,n-1)+'…':s;};
 const theme=`
 #mmc-root-v1{--mv-bg:var(--lumiverse-bg,#17151e);--mv-paper:var(--lumiverse-bg-elevated,#24212e);--mv-paper-2:var(--lumiverse-input-bg,#2b2738);--mv-sunk:var(--lumiverse-fill-subtle,#302c3e);--mv-ink:var(--lumiverse-text,#eee9f5);--mv-ink-2:var(--lumiverse-text,#ded8e8);--mv-muted:var(--lumiverse-text-muted,#a89fb9);--mv-line:var(--lumiverse-border,#40394f);--mv-line-2:var(--lumiverse-border,#51475f);--mv-accent:var(--lumiverse-primary,#a88bfa);--mv-accent-ink:var(--lumiverse-primary-deep-contrast,#fff);--mv-accent-soft:var(--lumiverse-primary-light,#39304f);--mv-accent-2:var(--lumiverse-primary-text,#c9a0cc);--mv-ok:var(--lumiverse-success,#73b69b);--mv-warn:#d2b275;--mv-danger:var(--lumiverse-danger,#ed8a9b);--mv-wiki-link:var(--mv-accent);--mv-wiki-head:var(--mv-accent);--mv-wiki-head-ink:var(--mv-accent-ink);--mv-wiki-box:var(--mv-paper-2);--mv-wiki-rule:var(--mv-line);color:var(--mv-ink);font-size:13px}
@@ -56,21 +54,16 @@ const theme=`
 #mmc-root-v1 .lv-reader h2{border-bottom:2px solid var(--mv-accent);padding-bottom:12px;margin:4px 0 16px}
 #mmc-root-v1 details{border:1px solid var(--mv-line);border-radius:8px;padding:10px;margin-top:12px}
 #mmc-root-v1 summary{cursor:pointer;color:var(--mv-muted);font-weight:700}
-#mmc-root-v1 .lv-source-tools{display:flex;flex-direction:column;gap:8px;margin:10px 0}
-#mmc-root-v1 .lv-source-tools .lv-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-#mmc-root-v1 .lv-source-tools input[type=number]{width:5.5em}
-#mmc-root-v1 .lv-ranges{display:flex;flex-direction:column;gap:6px;padding:10px;border:1px solid var(--mv-line);border-radius:10px}
-#mmc-root-v1 .lv-range{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-#mmc-root-v1 .lv-source-list{display:flex;flex-direction:column;gap:6px}
-#mmc-root-v1 .lv-source-summary{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:44px}
-#mmc-root-v1 .lv-source-summary b{flex:1;min-width:0}
-#mmc-root-v1 .lv-source{padding:0}
-#mmc-root-v1 .lv-source .lv-check{display:flex;flex-wrap:nowrap;gap:10px;align-items:center;min-height:44px;padding:0 12px;cursor:pointer}
-#mmc-root-v1 .lv-source .lv-check input{margin:0;width:20px;height:20px}
-#mmc-root-v1 .lv-source .lv-check b{flex:none;white-space:nowrap}
-#mmc-root-v1 .lv-source-line{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--mv-muted)}
-#mmc-root-v1 .lv-source-text{white-space:pre-wrap;margin:6px 0 0;cursor:pointer}
-#mmc-root-v1 .lv-source-text.is-clipped{max-height:5.4em;overflow:hidden;-webkit-mask-image:linear-gradient(#000 55%,transparent);mask-image:linear-gradient(#000 55%,transparent)}
+#mmc-root-v1 .lv-scope{display:flex;flex-direction:column;gap:10px;margin:10px 0}
+#mmc-root-v1 .lv-scope .mmc-seg{display:flex;gap:6px}
+#mmc-root-v1 .lv-scope .mmc-seg .mmc-btn{flex:1;min-height:44px}
+#mmc-root-v1 .lv-num{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-weight:700}
+#mmc-root-v1 .lv-scope input[inputmode=numeric]{width:6em;min-height:44px;font-size:16px;text-align:center}
+#mmc-root-v1 .lv-ranges{display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid var(--mv-line);border-radius:10px}
+#mmc-root-v1 .lv-range{display:flex;flex-wrap:nowrap;gap:6px;align-items:center}
+#mmc-root-v1 .lv-range .lv-x{min-width:44px;min-height:44px}
+#mmc-root-v1 .lv-add,#mmc-root-v1 .lv-run{width:100%;min-height:48px}
+#mmc-root-v1 .lv-source-summary{font-weight:800;font-size:15px;margin:4px 0}
 #mmc-root-v1 button:focus-visible,#mmc-root-v1 input:focus-visible,#mmc-root-v1 textarea:focus-visible,#mmc-root-v1 select:focus-visible{outline:2px solid var(--mv-accent);outline-offset:2px}
 @container (max-width:650px){#mmc-root-v1 .mmc-ov-grid{grid-template-columns:minmax(0,1fr)}}
 #mmc-root-v1{container-type:inline-size;max-width:100%;overflow-wrap:anywhere}
@@ -86,7 +79,9 @@ export function createView(root,{send,get,ui}){
  const field=(label,tag,parent,value='')=>{const l=el('label',label,parent,'lv-field'),x=el(tag,undefined,l);x.setAttribute('aria-label',label);if(tag!=='select')x.value=value;return x;};
  const check=(label,parent,checked=false)=>{const l=el('label',undefined,parent,'lv-check'),x=el('input',undefined,l);x.type='checkbox';x.checked=checked;x.setAttribute('aria-label',label);el('span',label,l);return x;};
  const select=(label,options,parent,value)=>{const x=field(label,'select',parent);for(const [id,name] of options){const o=el('option',name,x);o.value=id;if(id===value)o.setAttribute('selected','');}return x;};
- const go=tab=>{ui.tab=tab;ui.editor=null;ui.filter='all';ui.detail=null;ui.limits={};ui.queries={};render();};
+ // Entering the analysis view re-asks the message count (numbers only, no bodies) so a
+ // chat that grew since the last visit is not blocked by a stale total.
+ const go=tab=>{if(tab==='analysis')ui.countAsked=null;ui.tab=tab;ui.editor=null;ui.filter='all';ui.detail=null;ui.limits={};ui.queries={};render();};
  const title=x=>clip(x.title||x.text.split('\n')[0])||'제목 없는 기억';
  const matches=(x,q)=>!q||(title(x)+' '+x.text).toLowerCase().includes(q.toLowerCase());
  const explain=x=>[hasLifecycle(x.layer)?(x.status==='completed'?'완료':x.status==='cancelled'?'취소':'진행 중'):['completed','cancelled'].includes(x.status)?'주입 제외 (이전 상태)':'',x.scope==='public'?'공개':x.scope==='secret'?'비밀':x.scope==='character'?'인물 제한':'범위 확인 필요',x.hold?'보류':'',x.branchHold?'분기 보류':'',x.importedScope?'가져온 범위 보류':'',x.review?'근거 재검토':'',x.locked?'잠금':''].filter(Boolean).join(' · ');
@@ -145,7 +140,7 @@ export function createView(root,{send,get,ui}){
   const recent=card(main,'최근 변화');
   const changed=[...state.items].sort((a,b)=>(b.lastChangedAt||0)-(a.lastChangedAt||0)).slice(0,5);
   const list=el('div',undefined,recent,'lv-list');for(const x of changed)itemRow(x,list,state,{slot:'recent',pick:false,layer:true});
-  if(!state.items.length)el('p','아직 보관된 기억이 없어요. 종류별 탭에서 직접 추가하거나 원문을 선택해 후보를 만들어 보세요.',recent,'mmc-muted');
+  if(!state.items.length)el('p','아직 보관된 기억이 없어요. 종류별 탭에서 직접 추가하거나 상단의 분석으로 후보를 만들어 보세요.',recent,'mmc-muted');
  }
  // Outcome of the most recent reply in this chat since the server started.
  function lastInjection(parent){
@@ -212,69 +207,58 @@ export function createView(root,{send,get,ui}){
   const advanced=el('details',undefined,c);el('summary','고급 JSON · 제한 검토',advanced);const raw=field('항목 JSON','textarea',advanced,JSON.stringify(draft,null,2));
   button('JSON 편집 적용',()=>{try{ui.editor=JSON.parse(raw.value);render();}catch{ui.note('JSON 형식 오류');}},advanced);
  }
- function analysis(main,chatId){
-  const c=card(main,'선택 원문 분석');el('p','원문 선택 → 모델·입력 미리보기 → 명시 확인 → 후보 검토 순서로 진행합니다. 분석은 모델 호출을 사용하며 자동 승인하지 않습니다.',c);
-  button('원문 목록 읽기',()=>send('sources'),c);button('모델 목록 읽기',()=>send('connections'),c);
-  const msgs=ui.messages,total=Math.max(ui.total||0,msgs.length),ranges=(ui.rangesByChat[chatId||'']||=[]);
-  if(msgs.length)el('p','번호는 전체 채팅 순서 기준입니다. 전체 '+total+'개 중 숨김 메시지 '+(total-msgs.length)+'개는 분석에서 제외되어 목록·범위 선택에 포함되지 않습니다.',c,'mmc-muted');
-  const tools=el('div',undefined,c,'lv-source-tools'),actions=row(tools);
-  button('전체 선택',()=>{for(const m of msgs)ui.sources.add(m.id);render();},actions);
-  button('선택 해제',()=>{ui.sources.clear();ranges.length=0;ui.lastPick=null;render();},actions);
-  const recent=el('input',undefined,actions);recent.type='number';recent.min='1';recent.step='1';recent.value=String(ui.recentN??20);recent.setAttribute('aria-label','최근 메시지 개수');recent.onchange=()=>{ui.recentN=recent.value;};
-  button('최근 N개 선택',()=>{ui.recentN=recent.value;const ids=recentIds(msgs,recent.value);if(!ids.length){ui.note('최근 개수는 1 이상의 정수로 입력하세요.');return;}ui.sources=new Set(ids);ui.lastPick=null;render();},actions);
-  el('small','최근 N개 선택은 직접 체크를 숨김 제외 목록의 마지막 N개로 바꿉니다. 체크박스는 Shift+클릭으로 구간을 한 번에 바꿀 수 있습니다.',tools,'mmc-muted');
-  const box=el('div',undefined,tools,'lv-ranges');el('b','범위 선택',box);el('small','시작 - 끝은 각 메시지의 "대화 N" 번호입니다. 범위와 직접 체크를 합쳐 분석합니다.',box,'mmc-muted');
-  for(const [k,r] of ranges.entries()){
-   const line=el('div',undefined,box,'lv-range');line.dataset.range=String(k);
-   const start=el('input',undefined,line);start.type='number';start.min='1';start.step='1';start.value=String(r.start??'');start.setAttribute('aria-label','범위 '+(k+1)+' 시작');start.onchange=()=>{r.start=start.value;render();};
-   el('span','-',line);
-   const end=el('input',undefined,line);end.type='number';end.min='1';end.step='1';end.value=String(r.end??'');end.setAttribute('aria-label','범위 '+(k+1)+' 끝');end.onchange=()=>{r.end=end.value;render();};
-   button('×',()=>{ranges.splice(k,1);render();},line,'mmc-ghost mmc-sm').setAttribute('aria-label','범위 '+(k+1)+' 삭제');
-   const status=rangeStatus(r,total);
-   if(status.warning)el('small',status.warning,box,'lv-warning');
-   else if(status.ok&&!rangeIds(msgs,[r],total).length)el('small','이 범위의 메시지는 모두 숨김이라 분석에서 제외됩니다.',box,'lv-warning');
+ // Scope only: recent N or numeric ranges. The panel knows the chat's message count
+ // and hidden positions, never message bodies; the service reads those on analyze.
+ function analysis(main,chatId,state){
+  const c=card(main,'원문 분석'),key=chatId||'',src=(ui.sourceByChat[key]||={scope:'last',n:String(DEFAULT_RECENT),ranges:[]}),count=ui.counts[key];
+  if(chatId&&ui.countAsked!==key){ui.countAsked=key;send('count');}
+  const box=el('div',undefined,c,'lv-scope'),seg=el('div',undefined,box,'mmc-seg');seg.setAttribute('role','group');seg.setAttribute('aria-label','분석 범위 방식');
+  for(const [id,name] of [['last','최근'],['range','범위']]){const b=button(name,()=>{src.scope=id;if(id==='range'&&!src.ranges.length)src.ranges.push(defaultRange());render();},seg,'mmc-filter'+(src.scope===id?' is-active':''));b.dataset.scope=id;b.setAttribute('aria-pressed',String(src.scope===id));}
+  const number=(parent,label,value,set)=>{const x=el('input',undefined,parent);x.type='text';x.setAttribute('inputmode','numeric');x.setAttribute('pattern','[0-9]*');x.setAttribute('aria-label',label);x.value=String(value??'');x.oninput=()=>{set(x.value.replace(/[^0-9]/g,''));update();};x.onchange=()=>{x.value=x.value.replace(/[^0-9]/g,'');};return x;};
+  if(src.scope==='last'){const l=el('label',undefined,box,'lv-num');el('span','최근',l);number(l,'최근 메시지 개수',src.n,v=>src.n=v);el('span','개 메시지',l);}
+  else{
+   const list=el('div',undefined,box,'lv-ranges');
+   for(const [k,r] of src.ranges.entries()){
+    const line=el('div',undefined,list,'lv-range');line.dataset.range=String(k);
+    number(line,'범위 '+(k+1)+' 시작',r.start,v=>r.start=v);el('span','–',line);number(line,'범위 '+(k+1)+' 끝',r.end,v=>r.end=v);
+    button('×',()=>{src.ranges.splice(k,1);render();},line,'mmc-ghost lv-x').setAttribute('aria-label','범위 '+(k+1)+' 삭제');
+   }
+   if(src.ranges.length<MAX_RANGES)button('+ 범위 추가',()=>{src.ranges.push(defaultRange());render();},list,'lv-add');
   }
-  button('+ 범위 추가',()=>{ranges.push(total?{start:Math.max(1,total-19),end:total}:{start:1,end:20});render();},box);
-  const count=el('p',undefined,c),cap=el('p',undefined,c,'lv-warning'),picks=[];
-  // The message list stays folded behind a one-line summary until the user opens it.
-  const head=el('div',undefined,c,'lv-source-summary'),summary=el('b',undefined,head),open=!!ui.sourceListOpen&&msgs.length>0;
-  if(msgs.length){const t=button(open?'대화 목록 접기':'대화 목록 펼치기',()=>{ui.sourceListOpen=!open;render();},head,'mmc-sm');t.setAttribute('aria-expanded',String(open));t.dataset.sourceToggle='true';}
-  const list=el('div',undefined,c,'lv-source-list');list.hidden=!open;
-  const sync=()=>{
-   const covered=new Set(rangeIds(msgs,ranges,total)),chosen=effectiveSelection(msgs,ranges,ui.sources,total),size=inputSize(msgs,chosen,localTimeZone()),over=size>MAX_INPUT_CHARS;
-   for(const {m,pick,item} of picks){pick.checked=covered.has(m.id)||ui.sources.has(m.id);pick.disabled=covered.has(m.id);item.classList.toggle('is-selected',pick.checked);}
-   const picked=new Set(chosen),numbers=msgs.map((m,i)=>picked.has(m.id)?sourceNumber(m,i):null).filter(n=>n!==null);
-   summary.textContent=!msgs.length?'분석할 대화: 원문 목록을 먼저 읽으세요':numbers.length?'분석할 대화: '+(numbers.length>1?numbers[0]+'–'+numbers.at(-1):numbers[0])+' ('+numbers.length+'개 선택)':'분석할 대화: 선택 없음';
-   count.textContent='메시지 '+chosen.length+'개 선택됨 · 입력 '+size.toLocaleString('en-US')+' / '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자';count.className=over?'lv-warning':'mmc-muted';count.dataset.selected=String(chosen.length);
-   cap.textContent=over?'선택한 원문이 한 번에 분석할 수 있는 입력 한도('+MAX_INPUT_CHARS.toLocaleString('en-US')+'자)를 넘었습니다. 범위를 줄이거나 나눠서 분석하세요.':'';cap.hidden=!over;
-   preview.disabled=over;
-   return {chosen,over};
-  };
-  // Only the latest page of messages is rendered; selection state lives in ui.sources/ranges, not the DOM.
-  const shown=open?Math.min(msgs.length,ui.limits.sources||PAGE):0,first=msgs.length-shown;
-  if(open&&first>0){
-   el('small','최근 '+shown+'개만 표시 중입니다. 전체 선택·최근 N개·범위 선택은 보이지 않는 대화에도 적용됩니다.',list,'mmc-muted');
-   const more=button(`이전 대화 더 보기 (+${Math.min(PAGE,first)}) · ${shown}/${msgs.length}개 표시 중`,()=>{ui.limits.sources=shown+PAGE;render();},list,'lv-more');more.dataset.more='sources';
+  const summary=el('p',undefined,c,'lv-source-summary'),warn=el('p',undefined,c,'lv-warning');
+  const total=el('small',undefined,c,'mmc-muted');
+  const profile=ui.connections.find(x=>x.id===ui.connection);
+  const model=el('small',ui.connection?'모델: '+(profile?profile.name+' · '+(profile.model||'(모델 미지정)'):'선택한 연결')+' · '+(ui.mode||'raw'):'모델 연결이 아직 없습니다. 설정 탭에서 고르세요.',c,ui.connection?'mmc-muted':'lv-warning');model.dataset.model=ui.connection?'set':'none';
+  const run=button(ui.analyzing?'분석 중…':'분석',()=>{
+   const s=update();if(!s.ok){ui.note(s.error);return;}
+   if(!ui.connection){ui.note('설정 탭에서 모델 연결을 먼저 고르세요.');go('settings');return;}
+   ui.analyzing=true;run.disabled=true;run.textContent='분석 중…';
+   send('analyze',{source:src.scope==='last'?{scope:'last',n:src.n}:{scope:'range',ranges:src.ranges.map(r=>({start:r.start,end:r.end}))},mode:ui.mode||'raw',connection:ui.connection,timeZone:localTimeZone()});
+  },c,'mmc-primary lv-run');run.dataset.run='analyze';run.setAttribute('aria-label','분석 실행');
+  el('small','누르면 고른 범위의 원문을 설정한 모델로 바로 보냅니다(한 번에 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자까지). 비밀이 담긴 대화는 범위에서 빼세요. 결과는 후보로만 들어가고 자동 승인하지 않습니다.',c,'mmc-muted');
+  const queue=row(c);el('span','검토 대기 후보 '+state.candidates.length+'개',queue);button('검토 대기 열기',()=>go('overview'),queue,'mmc-sm');
+  function update(){
+   const s=!chatId?{ok:false,error:'채팅을 먼저 여세요.'}:count?sourceSummary(src.scope==='last'?{scope:'last',n:src.n}:{scope:'range',ranges:src.ranges},count.total,count.hidden):{ok:true,pending:true};
+   summary.textContent=s.pending?'대화 개수 확인 중…':s.ok?s.text:'분석할 대화 없음';summary.dataset.sourceSummary=s.ok&&!s.pending?'ok':s.pending?'pending':'error';
+   const notes=s.ok?(s.warnings||[]):[s.error];warn.textContent=notes.join(' ');warn.hidden=!notes.length;
+   total.textContent=count?'전체 '+count.total+'개'+(count.hidden.length?' · 숨김 '+count.hidden.length+'개는 분석에서 빠집니다':'')+' · 번호는 채팅 순서 기준':'';
+   run.disabled=!!ui.analyzing||(!s.ok&&!s.pending);
+   return s.pending?{ok:true}:s;
   }
-  for(const [i,m] of msgs.entries()){
-   if(i<first)continue;
-   const n=sourceNumber(m,i),item=el('div',undefined,list,'lv-item lv-source'),l=el('label',undefined,item,'lv-check'),pick=el('input',undefined,l);
-   pick.type='checkbox';pick.setAttribute('aria-label','대화 '+n+' 선택');el('b','대화 '+n,l);el('span',sourceLine(m.content)||'(빈 메시지)',l,'lv-source-line');
-   pick.onclick=event=>{
-    const on=pick.checked,last=ui.lastPick;
-    const span=event?.shiftKey&&Number.isSafeInteger(last)&&last!==i&&last<msgs.length?msgs.slice(Math.min(last,i),Math.max(last,i)+1):[m];
-    for(const x of span)on?ui.sources.add(x.id):ui.sources.delete(x.id);
-    ui.lastPick=i;sync();
-   };
-   picks.push({m,pick,item});
-  }
+  const refresh=button('대화 개수 새로고침',()=>send('count'),c,'mmc-ghost mmc-sm');refresh.dataset.count='refresh';
+  update();
+ }
+ const defaultRange=()=>{const t=ui.counts[get().chatId||'']?.total||0;return t?{start:String(Math.max(1,t-DEFAULT_RECENT+1)),end:String(t)}:{start:'1',end:String(DEFAULT_RECENT)};};
+ function analysisSettings(main){
+  const c=card(main,'분석 설정');
+  if(!ui.connections.length&&!ui.connectionsAsked){ui.connectionsAsked=true;send('connections');}
   const mode=select('분석 모드',[['raw','직접 분석 (raw)'],['quiet','프리셋 적용 (quiet)']],c,ui.mode||'raw');mode.onchange=()=>ui.mode=mode.value;
   const connection=select('모델 연결',[['','연결을 선택하세요'],...ui.connections.map(x=>[x.id,x.name+' · '+(x.model||'(모델 미지정)')])],c,ui.connection||'');connection.onchange=()=>ui.connection=connection.value;
-  const preview=button('입력·모델 미리보기',()=>{const {chosen,over}=sync();if(over){ui.note('입력 한도 초과: 선택을 줄이세요.');return;}send('preview',{ids:chosen,mode:mode.value,connection:connection.value,timeZone:localTimeZone()});},c,'mmc-primary');
-  sync();
-  if(ui.preview){const p=card(main,'분석 전 최종 확인');const profile=ui.connections.find(x=>x.id===ui.preview.connection);el('p',ui.preview.mode+' · '+(profile?.name||ui.preview.connection)+' · '+(profile?.model||''),p);const input=el('pre',ui.preview.input,p,'lv-source-text'+(ui.preview.input.length>600?' is-clipped':''));if(ui.preview.input.length>600){const t=button('입력 전체 펼치기',()=>{const now=input.classList.toggle('is-clipped');t.textContent=now?'입력 전체 펼치기':'입력 접기';},p,'mmc-ghost mmc-sm');input.onclick=()=>t.click();}el('p','선택 원문에 비밀이 없는지 직접 확인하세요. 이 버튼을 누르면 선택 모델로 전송합니다.',p,'lv-warning');button('이 입력과 모델로 분석 확인',()=>{send('analyze',{token:ui.preview.token,confirm:true});ui.preview=null;},p,'mmc-primary');}
+  button('모델 목록 새로고침',()=>send('connections'),c,'mmc-sm');
+  el('p','분석 버튼을 누르면 고른 범위의 원문이 이 연결로 바로 전송됩니다. 비밀이 담긴 대화는 범위에서 빼세요. 모델 결과는 후보로만 들어가며 자동 승인하지 않습니다. 선택은 패널을 다시 불러오기 전까지 유지됩니다.',c,'lv-warning');
  }
  function settings(main,state){
+  analysisSettings(main);
   const c=card(main,'설정 · 데이터 관리');const used=new TextEncoder().encode(JSON.stringify(state)).byteLength;
   el('p',`저장 용량 ${used.toLocaleString()} / 2,000,000바이트 · 되돌리기 최대 20회 (용량에 따라 감소)`,c);
   button(`되돌리기 (${state.undo?.length||0}회 가능)`,()=>send('undo'),c);button('근거 재검토',()=>send('review'),c);
@@ -282,7 +266,7 @@ export function createView(root,{send,get,ui}){
   const transfer=field('내보내기 가져오기 JSON','textarea',c,ui.transfer||'');transfer.dataset.transfer='true';transfer.oninput=()=>ui.transfer=transfer.value;
   button('JSON 내보내기',()=>send('export'),c);const confirm=check('현재 기억 교체 확인',c);
   button('JSON 가져오기 (현재 항목 교체·모두 보류)',()=>{if(!confirm.checked){ui.note('현재 기억 교체 확인이 필요합니다.');return;}try{send('import',{data:JSON.parse(transfer.value)});}catch{ui.note('JSON 형식 오류');}},c);
-  const info=card(main,'이식 범위와 권한');el('p','Lumiverse 테마를 따릅니다. chats·chat_mutation은 소유권/원문 조회, generation은 확인한 분석, interceptor는 생성 직전 기억 주입에 사용합니다. 메시지는 수정하지 않습니다.',info);
+  const info=card(main,'이식 범위와 권한');el('p','Lumiverse 테마를 따릅니다. chats·chat_mutation은 소유권/원문 조회, generation은 사용자가 누른 분석, interceptor는 생성 직전 기억 주입에 사용합니다. 메시지는 수정하지 않습니다.',info);
   el('p','인물 매핑·주입 예산·키워드 조건·흐름별 이력·구조화 장면·원본 데이터 변환·백그라운드 분석·로어북 동기화·Keeper는 지원하지 않습니다. 가짜 설정은 표시하지 않습니다.',info,'lv-warning');
   el('p','영구 책을 만들지 않습니다. 과거 수동 내보내기 책은 호스트에서 직접 연결 해제·삭제하세요. 확장 비활성화는 데이터를 남깁니다. 제거 전 JSON을 내보내세요.',info);
  }
@@ -292,7 +276,7 @@ export function createView(root,{send,get,ui}){
   const overlay=el('div',undefined,root,'mmc-overlay'),shell=el('section',undefined,overlay,'mmc-shell');
   const bar=el('header',undefined,shell,'mmc-bar'),brand=el('div',undefined,bar,'mmc-brand');el('span','▤',brand,'mmc-brand-mark');const bt=el('span',undefined,brand,'mmc-brand-text');el('b','기억 보관함',bt);el('small','MEMORY VAULT · 0.2 BETA',bt);
   el('span',chatId?'현재 이야기 · 채팅별 보관함':'채팅을 여세요',bar,'mmc-story');
-  const actions=el('div',undefined,bar,'mmc-head-actions');button('새로고침',()=>send('load'),actions,'mmc-sm');button('설정',()=>go('settings'),actions,'mmc-sm');
+  const actions=el('div',undefined,bar,'mmc-head-actions');button('새로고침',()=>send('load'),actions,'mmc-sm');button('분석',()=>go('analysis'),actions,'mmc-sm');button('설정',()=>go('settings'),actions,'mmc-sm');
   const nav=el('nav',undefined,shell,'mmc-tabs');nav.setAttribute('aria-label','기억 종류');
   for(const [id,name] of tabs){const b=button(name,()=>go(id),nav,'mmc-tab'+(ui.tab===id?' is-active':''));b.dataset.tab=id;b.setAttribute('aria-label',name);b.setAttribute('aria-current',ui.tab===id?'page':'false');if(state&&id!=='overview'){b.dataset.count=state.items.filter(x=>x.layer===id).length;b.setAttribute('title',name+' '+b.dataset.count+'개');}}
   const main=el('main',undefined,shell,'mmc-body lv-stack');
@@ -300,7 +284,7 @@ export function createView(root,{send,get,ui}){
   if(state){
    const used=new TextEncoder().encode(JSON.stringify(state)).byteLength;
    if(used>=1800000)el('p','용량 한도 근처: 오래된 되돌리기 이력은 저장 시 자동 정리됩니다. 현재 기억·후보 자체가 가득 차면 JSON 내보내기 후 불필요한 항목을 삭제하거나 텍스트를 줄이세요. 보류는 주입만 막습니다.',main,'lv-warning');
-   if(ui.editor)editor(main,state);else if(ui.tab==='overview')overview(main,state);else if(ui.tab==='settings')settings(main,state);else if(ui.tab==='analysis')analysis(main,chatId);else collection(main,state);
+   if(ui.editor)editor(main,state);else if(ui.tab==='overview')overview(main,state);else if(ui.tab==='settings')settings(main,state);else if(ui.tab==='analysis')analysis(main,chatId,state);else collection(main,state);
   }else if(!recovery)el('p','채팅을 열고 새로고침해 주세요.',main,'mmc-empty');
   el('div','루미버스용 · 비공식. Lumiverse 팀이 제작·승인·보증·지원하는 확장이 아닙니다.',shell,'lv-notice');const status=el('p',ui.status||'',shell,'lv-status');status.setAttribute('role','status');
  }

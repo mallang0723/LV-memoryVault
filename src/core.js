@@ -132,37 +132,67 @@ export async function inherit(parent,pm,cm,cutId,createdAt){
   x.branchHold=!valid||!Number.isInteger(x.lastChangeIndex)||x.lastChangeIndex>cut||!x.changeEvidence||!cm[x.lastChangeIndex]||!pm[x.lastChangeIndex]||pm[x.lastChangeIndex].id!==x.changeEvidence.id||!matches(pm[x.lastChangeIndex],x.changeEvidence.fingerprint)||!matches(cm[x.lastChangeIndex],x.changeEvidence.fingerprint)||!!x.branchHold;if(!x.branchHold)x.changeEvidence={id:cm[x.lastChangeIndex].id,fingerprint:cm[x.lastChangeIndex].digest};return x;
  });return s;
 }
-// Source selection for the analysis view. Message numbers are 1-based positions in
-// the full chat as the host orders it (hidden messages keep their slot but are never
-// listed or selectable). The input cap mirrors the service's preview check, measured
-// on the time-stamped input built by sourceInput().
+// Source scope for analysis. Message numbers are 1-based positions in the full chat
+// as the host orders it; hidden messages keep their slot but are never analyzed.
+// The panel only knows the message count and hidden positions, never bodies: it shows
+// a summary with sourceSummary(), and the service resolves the same scope against the
+// host messages with selectSource() when the user presses analyze.
 export const MAX_INPUT_CHARS=60000;
-export const sourceNumber=(m,i)=>(Number.isSafeInteger(m?.index)&&m.index>=0?m.index:i)+1;
+export const MAX_RANGES=20;
+export const DEFAULT_RECENT=20;
+const int=x=>x===''||x===null||x===undefined?NaN:Number(x);
 export function rangeStatus(range,total){
- const raw=[range?.start,range?.end],[start,end]=raw.map(x=>x===''||x===null||x===undefined?NaN:Number(x));
+ const [start,end]=[range?.start,range?.end].map(int);
  if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start<1||end<1)return {ok:false,warning:'시작·끝은 1 이상의 정수로 입력하세요.'};
  if(start>end)return {ok:false,start,end,warning:'시작 번호가 끝 번호보다 큽니다.'};
- if(!(total>0))return {ok:false,start,end,warning:'원문 목록을 읽은 뒤 범위를 확인합니다.'};
+ if(!(total>0))return {ok:false,start,end,warning:'대화가 아직 없습니다.'};
  if(start>total)return {ok:false,start,end,warning:'이 범위는 채팅 기록 밖입니다. (전체 '+total+'개)'};
- if(end>total)return {ok:true,start,end:total,warning:'끝 번호가 채팅 기록 밖이라 '+start+' - '+total+'까지만 선택합니다.'};
+ if(end>total)return {ok:true,start,end:total,warning:'끝 번호가 채팅 기록 밖이라 '+start+' - '+total+'까지만 분석합니다.'};
  return {ok:true,start,end};
 }
-export function rangeIds(messages,ranges,total){
- const spans=(ranges||[]).map(r=>rangeStatus(r,total)).filter(s=>s.ok);
- return messages.filter((m,i)=>{const n=sourceNumber(m,i);return spans.some(s=>n>=s.start&&n<=s.end);}).map(m=>m.id);
+// Validates, clamps and merges a scope into sorted, disjoint [start,end] spans.
+// {ok:false,error} for anything that cannot be analyzed; warnings for adjustments.
+export function resolveScope(scope,total){
+ if(!(Number.isSafeInteger(total)&&total>0))return {ok:false,error:'대화가 아직 없습니다.'};
+ if(scope?.scope==='last'){
+  const n=int(scope.n);
+  if(!Number.isSafeInteger(n)||n<1)return {ok:false,error:'최근 개수는 1 이상의 정수로 입력하세요.'};
+  return {ok:true,spans:[[Math.max(1,total-n+1),total]],warnings:n>total?['대화가 '+total+'개뿐이라 전체를 분석합니다.']:[]};
+ }
+ if(scope?.scope!=='range')return {ok:false,error:'분석 범위 방식을 고르세요.'};
+ const ranges=Array.isArray(scope.ranges)?scope.ranges:[];
+ if(!ranges.length)return {ok:false,error:'범위를 하나 이상 추가하세요.'};
+ if(ranges.length>MAX_RANGES)return {ok:false,error:'범위는 '+MAX_RANGES+'개까지 넣을 수 있습니다.'};
+ const warnings=[],raw=[];
+ for(const [k,r] of ranges.entries()){
+  const s=rangeStatus(r,total);
+  if(!s.ok)return {ok:false,error:'범위 '+(k+1)+': '+s.warning};
+  if(s.warning)warnings.push('범위 '+(k+1)+': '+s.warning);
+  raw.push([s.start,s.end]);
+ }
+ raw.sort((a,b)=>a[0]-b[0]||a[1]-b[1]);const spans=[];
+ for(const x of raw){const last=spans.at(-1);if(last&&x[0]<=last[1]+1){if(x[0]<=last[1])warnings.includes('겹치는 범위는 하나로 합쳤습니다.')||warnings.push('겹치는 범위는 하나로 합쳤습니다.');last[1]=Math.max(last[1],x[1]);}else spans.push([...x]);}
+ return {ok:true,spans,warnings};
 }
-export function effectiveSelection(messages,ranges,manual,total){
- const covered=new Set(rangeIds(messages,ranges,total));
- return messages.filter(m=>covered.has(m.id)||manual?.has(m.id)).map(m=>m.id);
+export const spanLabel=spans=>'대화 '+spans.map(([a,b])=>a===b?String(a):a+'–'+b).join(', ');
+// Panel summary from the count only: "대화 120–141 (22개)", hidden positions excluded.
+export function sourceSummary(scope,total,hidden=[]){
+ const r=resolveScope(scope,total);if(!r.ok)return r;
+ const skip=new Set(hidden),inSpan=n=>r.spans.some(([a,b])=>n>=a&&n<=b);
+ const size=r.spans.reduce((n,[a,b])=>n+b-a+1,0),skipped=[...skip].filter(inSpan).length,count=size-skipped;
+ if(!count)return {ok:false,error:'고른 범위의 메시지가 모두 숨김이라 분석할 것이 없습니다.'};
+ return {...r,count,skipped,text:spanLabel(r.spans)+' ('+count+'개)'+(skipped?' · 숨김 '+skipped+'개 제외':'')};
 }
-export function recentIds(messages,n){
- const count=Math.floor(Number(n));
- return Number.isSafeInteger(count)&&count>0?messages.slice(-count).map(m=>m.id):[];
+// Service side: the same scope resolved against the host's current messages.
+export function selectSource(messages,scope){
+ const {total,hidden}=countOf(messages),s=sourceSummary(scope,total,hidden);if(!s.ok)throw Error(s.error);
+ const picked=messages.map((m,index)=>({m,index})).filter(({m,index})=>!m?.extra?.hidden&&s.spans.some(([a,b])=>index+1>=a&&index+1<=b));
+ return {...s,picked};
 }
+export const countOf=messages=>({total:messages.length,hidden:messages.flatMap((m,i)=>m?.extra?.hidden?[i+1]:[])});
 // Analysis input: a time-zone line, then each message prefixed with its host send time
 // (Lumiverse 1.2.5 Message.send_date, unix seconds; millisecond values are tolerated).
-// The service builds the model input and the view measures the cap with this same
-// function, so the preview check and the on-screen size never disagree.
+// The service builds the model input with it and applies MAX_INPUT_CHARS to the result.
 export function validTimeZone(zone){
  if(typeof zone!=='string'||!/^[A-Za-z0-9_+\-\/]{1,64}$/.test(zone))return null;
  try{new Intl.DateTimeFormat('en-US',{timeZone:zone});return zone;}catch{return null;}
@@ -181,8 +211,4 @@ export function sourceInput(messages,zone){
  if(!messages.length)return '';
  const tz=validTimeZone(zone),header='[메시지 전송 시각 기준: '+(tz||'UTC (사용자 시간대 미확인)')+']';
  return [header,...messages.map(m=>{const t=sentStamp(m,tz);return (t?'[전송 '+t+'] ':'[전송 시각 미상] ')+String(m.content??'');})].join('\n\n');
-}
-export function inputSize(messages,ids,zone){
- const chosen=new Set(ids);
- return sourceInput(messages.filter(m=>chosen.has(m.id)),zone).length;
 }

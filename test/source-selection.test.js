@@ -1,11 +1,8 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
 import {parseHTML} from 'linkedom';
-import {MAX_INPUT_CHARS,sourceNumber,rangeStatus,rangeIds,effectiveSelection,recentIds,inputSize,sourceInput,localTimeZone} from '../src/core.js';
+import {MAX_INPUT_CHARS,MAX_RANGES,rangeStatus,resolveScope,sourceSummary,selectSource,countOf} from '../src/core.js';
 import {createService} from '../src/service.js';
 import {setup} from '../src/frontend.js';
-
-// Visible list as the service returns it: index is the position in the full chat.
-const visible=[{id:'a',content:'one',index:0},{id:'c',content:'three',index:2},{id:'d',content:'four',index:3},{id:'e',content:'five',index:4}];
 
 test('range status validates integers, order and clamps to the chat length',()=>{
  assert.deepEqual(rangeStatus({start:'2',end:'4'},5),{ok:true,start:2,end:4});
@@ -18,44 +15,51 @@ test('range status validates integers, order and clamps to the chat length',()=>
  assert.equal(rangeStatus({start:1,end:2},0).ok,false);
 });
 
-test('ranges use full-chat numbers, skip hidden slots and union with manual ticks',()=>{
- assert.deepEqual(visible.map(sourceNumber),[1,3,4,5]);
- assert.equal(sourceNumber({id:'x'},6),7);
- assert.deepEqual(rangeIds(visible,[{start:2,end:3}],5),['c']);
- assert.deepEqual(rangeIds(visible,[{start:2,end:2}],5),[]);
- assert.deepEqual(rangeIds(visible,[{start:1,end:1},{start:4,end:9},{start:7,end:8}],5),['a','d','e']);
- assert.deepEqual(effectiveSelection(visible,[{start:4,end:5}],new Set(['a','d','gone']),5),['a','d','e']);
- assert.deepEqual(effectiveSelection(visible,[],new Set(),5),[]);
+test('scopes resolve to merged spans with Korean errors for anything unusable',()=>{
+ assert.deepEqual(resolveScope({scope:'last',n:'20'},141).spans,[[122,141]]);
+ const all=resolveScope({scope:'last',n:50},10);assert.deepEqual(all.spans,[[1,10]]);assert.match(all.warnings[0],/10개뿐이라 전체/);
+ for(const n of [0,'',' ','x',-1,1.5])assert.match(resolveScope({scope:'last',n},10).error,/1 이상의 정수/);
+ assert.match(resolveScope({scope:'last',n:5},0).error,/대화가 아직 없습니다/);
+ assert.match(resolveScope({},10).error,/방식/);
+ assert.match(resolveScope({scope:'range',ranges:[]},10).error,/하나 이상/);
+ assert.match(resolveScope({scope:'range',ranges:Array.from({length:MAX_RANGES+1},()=>({start:1,end:1}))},10).error,/20개까지/);
+ assert.match(resolveScope({scope:'range',ranges:[{start:1,end:2},{start:5,end:3}]},10).error,/^범위 2: 시작 번호가 끝 번호보다/);
+ assert.match(resolveScope({scope:'range',ranges:[{start:20,end:30}]},10).error,/범위 1: 이 범위는 채팅 기록 밖/);
+ const merged=resolveScope({scope:'range',ranges:[{start:8,end:20},{start:1,end:3},{start:2,end:5},{start:6,end:6}]},10);
+ assert.deepEqual(merged.spans,[[1,6],[8,10]]);assert.ok(merged.warnings.some(w=>/겹치는 범위/.test(w)));assert.ok(merged.warnings.some(w=>/범위 1: 끝 번호가 채팅 기록 밖/.test(w)));
 });
 
-test('recent N takes the tail of the visible list and rejects bad counts',()=>{
- assert.deepEqual(recentIds(visible,2),['d','e']);
- assert.deepEqual(recentIds(visible,'20'),['a','c','d','e']);
- assert.deepEqual(recentIds(visible,0),[]);
- assert.deepEqual(recentIds(visible,'x'),[]);
+test('summary line counts positions and leaves hidden messages out',()=>{
+ assert.equal(sourceSummary({scope:'last',n:22},141).text,'대화 120–141 (22개)');
+ assert.equal(sourceSummary({scope:'range',ranges:[{start:1,end:3},{start:7,end:7}]},10,[2]).text,'대화 1–3, 7 (3개) · 숨김 1개 제외');
+ assert.match(sourceSummary({scope:'range',ranges:[{start:2,end:2}]},10,[2]).error,/모두 숨김/);
 });
 
-test('input size mirrors the time-stamped preview input',()=>{
- const head='[메시지 전송 시각 기준: UTC (사용자 시간대 미확인)]\n\n';
- assert.equal(inputSize(visible,['a','c']),(head+'[전송 시각 미상] one\n\n[전송 시각 미상] three').length);
- assert.equal(inputSize(visible,['a'],'Asia/Seoul'),sourceInput([visible[0]],'Asia/Seoul').length);
- assert.equal(inputSize(visible,[]),0);
+test('service selection uses host order, skips hidden and keeps full-chat indexes',()=>{
+ const chat=[{id:'a',content:'1'},{id:'b',content:'2',extra:{hidden:true}},{id:'c',content:'3'},{id:'d',content:'4'}];
+ assert.deepEqual(countOf(chat),{total:4,hidden:[2]});
+ const s=selectSource(chat,{scope:'last',n:3});
+ assert.deepEqual(s.picked.map(x=>[x.m.id,x.index]),[['c',2],['d',3]]);assert.equal(s.text,'대화 2–4 (2개) · 숨김 1개 제외');
+ assert.throws(()=>selectSource(chat,{scope:'range',ranges:[{start:2,end:2}]}),/모두 숨김/);
  assert.equal(MAX_INPUT_CHARS,60000);
 });
 
-const fakeApi=messages=>{const db=new Map();return {permissions:{has:()=>true},chats:{getActive:async()=>({id:'a'}),get:async(id,u)=>u==='owner'&&id==='a'?{id,metadata:{}}:null},userStorage:{exists:async k=>db.has(k),getJson:async k=>structuredClone(db.get(k)),setJson:async(k,v)=>{db.set(k,structuredClone(v));}},chat:{getMessages:async()=>structuredClone(messages)},connections:{get:async id=>({id,name:'n',provider:'p',model:'m'})},generate:{raw:async()=>{throw Error('no model calls in tests');}}};};
+const fakeApi=messages=>{const db=new Map(),calls=[];return {calls,permissions:{has:()=>true},chats:{getActive:async()=>({id:'a'}),get:async(id,u)=>u==='owner'&&id==='a'?{id,metadata:{}}:null},userStorage:{exists:async k=>db.has(k),getJson:async k=>structuredClone(db.get(k)),setJson:async(k,v)=>{db.set(k,structuredClone(v));}},chat:{getMessages:async()=>structuredClone(messages)},connections:{get:async id=>({id,name:'n',provider:'p',model:'m'})},generate:{raw:async input=>{calls.push(input);return {content:'[]'};}}};};
 
-test('sources number messages by full-chat position and exclude hidden ones',async()=>{
- const s=createService(fakeApi([{id:'m1',content:'a',extra:{}},{id:'m2',content:'b',extra:{hidden:true}},{id:'m3',content:'c'}]));
- const r=await s.run({type:'sources',chatId:'a'},'owner');
- assert.equal(r.total,3);assert.deepEqual(r.messages,[{id:'m1',content:'a',index:0,send_date:null},{id:'m3',content:'c',index:2,send_date:null}]);
+test('count returns only the total and hidden positions, never message text',async()=>{
+ const s=createService(fakeApi([{id:'m1',content:'BODY_ONE',extra:{}},{id:'m2',content:'BODY_TWO',extra:{hidden:true}},{id:'m3',content:'BODY_THREE'}]));
+ const r=await s.run({type:'count',chatId:'a'},'owner');
+ assert.equal(r.total,3);assert.deepEqual(r.hidden,[2]);assert.ok(!JSON.stringify(r).includes('BODY_'));
+ await assert.rejects(()=>s.run({type:'sources',chatId:'a'},'owner'));
 });
 
-test('preview rejects selections over the input cap with the limit in the message',async()=>{
- const big='x'.repeat(40000),s=createService(fakeApi([{id:'m1',content:big},{id:'m2',content:big}]));
- await assert.rejects(()=>s.run({type:'preview',chatId:'a',ids:['m1','m2'],mode:'raw',connection:'c1'},'owner'),/원문 크기 초과.*80,0\d\d자.*60,000자/);
- const ok=await s.run({type:'preview',chatId:'a',ids:['m1'],mode:'raw',connection:'c1'},'owner');
- assert.equal(ok.preview.input.length,sourceInput([{id:'m1',content:big}]).length);assert.ok(ok.preview.input.endsWith(big));
+test('one analyze request reads only the chosen range and records evidence by chat position',async()=>{
+ const api=fakeApi(Array.from({length:6},(_,i)=>({id:'m'+i,content:'BODY_'+i,extra:i===4?{hidden:true}:{}}))),s=createService(api);
+ const r=await s.run({type:'analyze',chatId:'a',revision:0,mode:'raw',connection:'c1',source:{scope:'range',ranges:[{start:2,end:3},{start:5,end:9}]}},'owner');
+ const input=api.calls[0].messages[1].content;
+ assert.ok(input.includes('BODY_1')&&input.includes('BODY_2')&&input.includes('BODY_5'));
+ assert.ok(!input.includes('BODY_0')&&!input.includes('BODY_3')&&!input.includes('BODY_4'));
+ assert.equal(r.total,6);assert.match(r.notice,/^대화 2–3, 5–6 \(3개\) · 숨김 1개 제외 분석/);
 });
 
 const mount=()=>{
@@ -63,90 +67,63 @@ const mount=()=>{
  const root=document.createElement('div');document.body.append(root);const sent=[];let listener,switcher;
  const cleanup=setup({ui:{registerDrawerTab:()=>({root,destroy(){}})},sendToBackend:r=>sent.push(r),onBackendMessage:fn=>{listener=fn;return()=>{};},events:{on:(_,fn)=>{switcher=fn;return()=>{};}}});
  listener({requestId:sent[0].requestId,ok:true,chatId:'a',state:{revision:0,items:[],candidates:[],undo:[]}});
- const click=text=>[...root.querySelectorAll('button')].find(x=>x.textContent===text).click();
- const load=(messages,total)=>{click('약속');click('원문에서 정리');click('원문 목록 읽기');listener({requestId:sent.at(-1).requestId,ok:true,chatId:'a',state:{revision:0,items:[],candidates:[],undo:[]},messages,total});if(messages.length&&!root.querySelector('[data-source-toggle][aria-expanded="true"]'))click('대화 목록 펼치기');};
- const count=()=>Number(root.querySelector('[data-selected]').dataset.selected);
- const preview=()=>{click('입력·모델 미리보기');return sent.at(-1);};
- return {root,sent,click,load,count,preview,cleanup,switchTo:id=>switcher({chatId:id}),reply:extra=>listener({requestId:sent.at(-1).requestId,ok:true,chatId:'a',state:{revision:0,items:[],candidates:[],undo:[]},...extra})};
+ const button=text=>[...root.querySelectorAll('button')].find(x=>x.textContent===text);
+ const click=text=>{const b=button(text);assert.ok(b,text);b.click();};
+ const reply=extra=>listener({requestId:sent.at(-1).requestId,ok:true,chatId:'a',state:{revision:0,items:[],candidates:[],undo:[]},...extra});
+ const open=(total,hidden=[])=>{click('분석');assert.equal(sent.at(-1).type,'count');reply({total,hidden});};
+ const summary=()=>root.querySelector('[data-source-summary]').textContent;
+ const type=(label,value)=>{const x=root.querySelector(`[aria-label="${label}"]`);assert.ok(x,label);x.value=value;x.oninput();};
+ const connect=()=>{click('설정');reply({connections:[{id:'c1',name:'A',model:'gpt-x'}]});const s=root.querySelector('[aria-label="모델 연결"]');for(const o of s.querySelectorAll('option'))o.toggleAttribute('selected',o.getAttribute('value')==='c1');s.onchange();click('분석');};
+ return {root,sent,click,button,reply,open,summary,type,connect,cleanup,switchTo:id=>switcher({chatId:id})};
 };
 
-test('analysis view numbers by chat position and explains hidden exclusion',()=>{
- const v=mount();v.load(visible,5);
- const labels=[...v.root.querySelectorAll('.lv-source b')].map(x=>x.textContent);
- assert.deepEqual(labels,['대화 1','대화 3','대화 4','대화 5']);
- assert.match(v.root.textContent,/전체 5개 중 숨김 메시지 1개는 분석에서 제외/);
- assert.match(v.root.textContent,/메시지 0개 선택됨/);v.cleanup();
-});
-
-test('select all, clear, recent N and shift range feed the preview ids',()=>{
- const v=mount();v.load(visible,5);
- v.click('전체 선택');assert.equal(v.count(),4);assert.deepEqual(v.preview().ids,['a','c','d','e']);
- v.click('선택 해제');assert.equal(v.count(),0);
- v.root.querySelector('[aria-label="최근 메시지 개수"]').value='2';v.click('최근 N개 선택');
- assert.equal(v.count(),2);assert.deepEqual(v.preview().ids,['d','e']);
- v.click('선택 해제');
- const box=n=>v.root.querySelector(`[aria-label="대화 ${n} 선택"]`);
- box(1).checked=true;box(1).onclick({shiftKey:false});
- box(5).checked=true;box(5).onclick({shiftKey:true});
- assert.equal(v.count(),4);
- box(4).checked=false;box(4).onclick({shiftKey:false});
- assert.deepEqual(v.preview().ids,['a','c','e']);
+test('recent N is the default scope and the summary follows the typed number',()=>{
+ const v=mount();v.open(141);
+ assert.equal(v.summary(),'대화 122–141 (20개)');
+ const n=v.root.querySelector('[aria-label="최근 메시지 개수"]');assert.equal(n.getAttribute('inputmode'),'numeric');
+ v.type('최근 메시지 개수','22');assert.equal(v.summary(),'대화 120–141 (22개)');
+ v.type('최근 메시지 개수','0');assert.match(v.root.textContent,/1 이상의 정수/);
+ assert.ok(v.root.querySelector('[data-run]').disabled);
  v.cleanup();
 });
 
-test('ranges add, warn when outside the chat, remove, and persist per chat',()=>{
- const v=mount();v.load(visible,5);
- v.click('+ 범위 추가');assert.equal(v.count(),4);
- const set=(label,value)=>{const x=v.root.querySelector(`[aria-label="${label}"]`);x.value=value;x.onchange();};
- set('범위 1 시작','3');set('범위 1 끝','4');assert.equal(v.count(),2);
- assert.ok(v.root.querySelector('[aria-label="대화 3 선택"]').disabled);
- v.root.querySelector('[aria-label="대화 1 선택"]').checked=true;v.root.querySelector('[aria-label="대화 1 선택"]').onclick({});
- assert.deepEqual(v.preview().ids,['a','c','d']);
- v.click('+ 범위 추가');set('범위 2 시작','8');set('범위 2 끝','9');
- assert.match(v.root.textContent,/이 범위는 채팅 기록 밖입니다/);assert.equal(v.count(),3);
- v.root.querySelector('[aria-label="범위 2 삭제"]').click();assert.ok(!v.root.textContent.includes('채팅 기록 밖'));
- v.switchTo('b');v.switchTo('a');v.reply({messages:visible,total:5});
-
- assert.equal(v.root.querySelector('[aria-label="범위 1 시작"]').value,'3');assert.equal(v.count(),2);
- v.click('선택 해제');assert.equal(v.root.querySelector('[aria-label="범위 1 시작"]'),null);v.cleanup();
-});
-
-test('message rows are one line: number + tag-free 40-char preview, no per-row expand',()=>{
- const long='<stat>HP 10</stat>\n첫 줄 내용입니다. '+'가'.repeat(80)+'\n둘째 줄';
- const v=mount();v.load([{id:'a',content:long,index:0},{id:'b',content:'짧은 대화',index:1}],2);
- const rows=[...v.root.querySelectorAll('.lv-source')];assert.equal(rows.length,2);
- const line=rows[0].querySelector('.lv-source-line').textContent;
- assert.ok(!line.includes('<')&&!line.includes('\n'));assert.ok(line.length<=40);assert.ok(line.endsWith('…'));assert.match(line,/^HP 10 첫 줄 내용입니다/);
- assert.equal(rows[1].querySelector('.lv-source-line').textContent,'짧은 대화');
- assert.equal(v.root.querySelector('.lv-source-text'),null);
- assert.ok(![...v.root.querySelectorAll('.lv-source button')].length);
- assert.ok(![...v.root.querySelectorAll('button')].some(b=>b.textContent==='펼치기'));
- // tapping the row text toggles the checkbox through its label
- assert.equal(rows[1].querySelector('.lv-source-line').closest('label'),rows[1].querySelector('input').closest('label'));
+test('ranges add, validate, merge, remove and persist per chat',()=>{
+ const v=mount();v.open(10,[4]);
+ v.click('범위');assert.equal(v.root.querySelector('[aria-label="범위 1 시작"]').value,'1');assert.equal(v.summary(),'대화 1–10 (9개) · 숨김 1개 제외');
+ v.type('범위 1 시작','2');v.type('범위 1 끝','5');assert.equal(v.summary(),'대화 2–5 (3개) · 숨김 1개 제외');
+ v.click('+ 범위 추가');v.type('범위 2 시작','4');v.type('범위 2 끝','6');
+ assert.equal(v.summary(),'대화 2–6 (4개) · 숨김 1개 제외');assert.match(v.root.textContent,/겹치는 범위는 하나로 합쳤습니다/);
+ v.type('범위 2 시작','30');v.type('범위 2 끝','40');assert.match(v.root.textContent,/범위 2: 이 범위는 채팅 기록 밖입니다/);
+ assert.ok(v.root.querySelector('[data-run]').disabled);
+ v.root.querySelector('[aria-label="범위 2 삭제"]').click();assert.equal(v.summary(),'대화 2–5 (3개) · 숨김 1개 제외');
+ v.switchTo('b');v.reply({});v.switchTo('a');v.reply({});v.click('분석');
+ assert.equal(v.root.querySelector('[aria-label="범위 1 시작"]').value,'2');assert.equal(v.summary(),'대화 2–5 (3개) · 숨김 1개 제외');
  v.cleanup();
 });
 
-test('message list folds behind a summary line and keeps selection while folded',()=>{
- const v=mount();v.load(visible,5);
- const summary=()=>v.root.querySelector('.lv-source-summary b').textContent;
- assert.equal(summary(),'분석할 대화: 선택 없음');
- v.click('대화 목록 접기');assert.equal(v.root.querySelectorAll('.lv-source').length,0);
- assert.equal(v.root.querySelector('[data-source-toggle]').getAttribute('aria-expanded'),'false');
- v.click('전체 선택');assert.equal(summary(),'분석할 대화: 1–5 (4개 선택)');assert.equal(v.count(),4);
- assert.deepEqual(v.preview().ids,['a','c','d','e']);
- v.root.querySelector('[aria-label="최근 메시지 개수"]').value='1';v.click('최근 N개 선택');assert.equal(summary(),'분석할 대화: 5 (1개 선택)');
- v.click('대화 목록 펼치기');assert.equal(v.root.querySelectorAll('.lv-source').length,4);
- assert.ok(v.root.querySelector('[aria-label="대화 5 선택"]').checked);
+test('one tap on 분석 sends the scope, never message IDs or text; needs a connection from settings',()=>{
+ const v=mount();v.open(30);
+ v.root.querySelector('[data-run]').click();
+ assert.ok(!v.sent.some(x=>x.type==='analyze'));assert.match(v.root.textContent,/모델 연결을 먼저 고르세요/);
+ assert.ok(v.root.querySelector('[aria-label="모델 연결"]'),'opens the settings tab');
+ v.connect();v.root.querySelector('[data-run]').click();
+ const req=v.sent.at(-1);assert.equal(req.type,'analyze');
+ assert.deepEqual(req.source,{scope:'last',n:'20'});assert.equal(req.mode,'raw');assert.equal(req.connection,'c1');
+ assert.ok(!('ids' in req)&&!('token' in req)&&!('confirm' in req));
+ assert.equal(v.root.querySelector('[data-run]').textContent,'분석 중…');assert.ok(v.root.querySelector('[data-run]').disabled);
+ v.reply({saved:true,total:30,hidden:[],notice:'대화 11–30 (20개) 분석 · 후보 0개 추가 · 검토 대기에서 확인 후 승인하세요'});
+ assert.match(v.root.querySelector('[role=status]').textContent,/대화 11–30/);assert.ok(v.root.querySelector('[data-tab="overview"][aria-current="page"]'));
+ v.click('분석');assert.equal(v.root.querySelector('[data-run]').textContent,'분석');
  v.cleanup();
 });
 
-test('selections over the input cap show the limit and block the preview request',()=>{
- const v=mount();const big='x'.repeat(31000);v.load([{id:'a',content:big,index:0},{id:'b',content:big,index:1}],2);
- v.click('전체 선택');assert.ok(v.root.textContent.includes(inputSize([{id:'a',content:big},{id:'b',content:big}],['a','b'],localTimeZone()).toLocaleString('en-US')+' / 60,000자'));assert.match(v.root.textContent,/입력 한도\(60,000자\)를 넘었습니다/);
- const before=v.sent.length,btn=[...v.root.querySelectorAll('button')].find(x=>x.textContent==='입력·모델 미리보기');
- assert.ok(btn.disabled);btn.click();assert.equal(v.sent.length,before);
- v.click('선택 해제');
- assert.ok(![...v.root.querySelectorAll('button')].find(x=>x.textContent==='입력·모델 미리보기').disabled);v.cleanup();
+test('model choice lives in the settings tab, not in the analysis view',()=>{
+ const v=mount();v.open(5);
+ assert.equal(v.root.querySelector('[aria-label="모델 연결"]'),null);assert.equal(v.root.querySelector('[aria-label="분석 모드"]'),null);
+ assert.equal(v.button('입력·모델 미리보기'),undefined);
+ v.click('설정');assert.ok(v.root.querySelector('[aria-label="모델 연결"]'));assert.ok(v.root.querySelector('[aria-label="분석 모드"]'));
+ assert.match(v.root.textContent,/분석 버튼을 누르면 고른 범위의 원문이 이 연결로 바로 전송됩니다/);
+ v.cleanup();
 });
 
 test('overview shows whether the latest reply got its memories',()=>{

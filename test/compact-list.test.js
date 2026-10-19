@@ -63,17 +63,14 @@ test('overview: one-line summary chips, paged review queue with layer and text f
  v.cleanup();
 });
 
-test('source picker renders the latest 20 messages, pages backward and still selects all',()=>{
+test('analysis view asks only for the message count and never renders message rows',()=>{
  const v=mount({items:[],candidates:[]});
- v.click('약속');v.click('원문에서 정리');v.click('원문 목록 읽기');
- const messages=Array.from({length:300},(_,i)=>({id:'m'+i,content:'메시지 '+i,index:i}));
- v.listener({requestId:v.sent.at(-1).requestId,ok:true,chatId:'a',state:{revision:0,items:[],candidates:[],undo:[]},messages,total:300});
- v.click('대화 목록 펼치기');
- const labels=()=>[...v.root.querySelectorAll('.lv-source b')].map(x=>x.textContent);
- assert.equal(labels().length,PAGE);assert.equal(labels()[0],'대화 281');assert.equal(labels().at(-1),'대화 300');
- assert.match(v.root.textContent,/보이지 않는 대화에도 적용/);
- v.more('sources').click();assert.equal(labels().length,40);assert.equal(labels()[0],'대화 261');
- v.click('전체 선택');assert.equal(v.root.querySelector('[data-selected]').dataset.selected,'300');
+ v.click('분석');const asks=()=>v.sent.filter(x=>x.type==='count').length;assert.equal(asks(),1);
+ v.listener({requestId:v.sent.at(-1).requestId,ok:true,chatId:'a',state:{revision:0,items:[],candidates:[],undo:[]},total:300,hidden:[]});
+ assert.equal(v.root.querySelector('[data-source-summary]').textContent,'대화 281–300 (20개)');
+ assert.equal(v.root.querySelectorAll('.lv-source,[type=checkbox]').length,0);
+ v.click('개요');v.click('분석');assert.equal(asks(),2,'count is re-asked on each visit');
+ assert.equal(v.root.querySelector('[data-source-summary]').textContent,'대화 281–300 (20개)','cached count shows while the new one loads');
  v.cleanup();
 });
 

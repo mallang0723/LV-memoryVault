@@ -42,8 +42,7 @@ test('operator scope: full flow works and every per-user host call carries the a
  assert.equal((await s.run({type:'load'},'alice')).chatId,'chatA');
  await s.run(put('chatA',0,'ALICE_PUBLIC'),'alice');
  assert.deepEqual((await s.run({type:'connections',chatId:'chatA'},'alice')).connections,[{id:'conn',name:'n',model:'m'}]);
- const p=await s.run({type:'preview',chatId:'chatA',ids:['ma'],mode:'raw',connection:'conn'},'alice');
- const a=await s.run({type:'analyze',chatId:'chatA',revision:1,token:p.preview.token,confirm:true},'alice');
+ const a=await s.run({type:'analyze',chatId:'chatA',revision:1,mode:'raw',connection:'conn',source:{scope:'last',n:1}},'alice');
  assert.equal(a.state.candidates.length,1);
  await s.run({type:'review',chatId:'chatA',revision:2},'alice');
  assert.ok(h.calls.some(c=>c.name==='generate.raw'));
@@ -56,8 +55,8 @@ test('operator scope: another user cannot read or write a foreign chat, and getM
  const h=operatorHost(),s=createService(h.api);
  await s.run(put('chatA',0,'ALICE_SECRET_TEXT'),'alice');
  const before=h.calls.length;
- for(const type of ['load','sources','export','review'])await assert.rejects(()=>s.run({type,chatId:'chatA',revision:1},'bob'),/소유권/);
- await assert.rejects(()=>s.run({type:'preview',chatId:'chatA',ids:['ma'],mode:'raw',connection:'conn'},'bob'),/소유권/);
+ for(const type of ['load','count','export','review'])await assert.rejects(()=>s.run({type,chatId:'chatA',revision:1},'bob'),/소유권/);
+ await assert.rejects(()=>s.run({type:'analyze',chatId:'chatA',revision:1,mode:'raw',connection:'conn',source:{scope:'last',n:1}},'bob'),/소유권/);
  await assert.rejects(()=>s.run(put('chatA',1,'BOB_OVERWRITE'),'bob'),/소유권/);
  await assert.rejects(()=>s.run({type:'reset',chatId:'chatA',confirmRecovery:true},'bob'),/소유권/);
  assert.ok(!h.calls.slice(before).some(c=>c.name==='chat.getMessages'));
@@ -80,9 +79,10 @@ test('operator scope: a userId inside the payload is ignored',async()=>{
  assert.equal(own.chatId,'chatB');
  assert.ok(h.storage.has('bob/chats/chatB/data.json'));
  assert.ok(!h.storage.has('alice/chats/chatB/data.json'));
- // Preview tokens are bound to the user that created them.
- const p=await s.run({type:'preview',chatId:'chatA',ids:['ma'],mode:'raw',connection:'conn'},'alice');
- await assert.rejects(()=>s.run({type:'analyze',chatId:'chatB',revision:1,token:p.preview.token,confirm:true,userId:'alice'},'bob'),/명시 확인/);
+ // Analysis runs on the routed user's own chat, whatever the payload claims.
+ const before=h.calls.length;
+ await assert.rejects(()=>s.run({type:'analyze',chatId:'chatA',revision:1,mode:'raw',connection:'conn',source:{scope:'last',n:1},userId:'alice'},'bob'),/소유권/);
+ assert.ok(!h.calls.slice(before).some(c=>c.name==='chat.getMessages'||c.name==='generate.raw'));
 });
 
 test('operator scope: missing or malformed identity fails closed before any host call',async()=>{
@@ -130,8 +130,7 @@ test('user-scoped install still works: host pins the installer regardless of req
  await s.run(put('chatA',0,'ALICE_PUBLIC'),'alice');
  assert.equal((await s.run({type:'load'},'alice')).state.items[0].text,'ALICE_PUBLIC');
  assert.match(JSON.stringify(await s.intercept(history('ma'),{chatId:'chatA',userId:'alice'})),/ALICE_PUBLIC/);
- const p=await s.run({type:'preview',chatId:'chatA',ids:['ma'],mode:'raw',connection:'conn'},'alice');
- assert.equal((await s.run({type:'analyze',chatId:'chatA',revision:1,token:p.preview.token,confirm:true},'alice')).state.candidates.length,1);
+ assert.equal((await s.run({type:'analyze',chatId:'chatA',revision:1,mode:'raw',connection:'conn',source:{scope:'last',n:1}},'alice')).state.candidates.length,1);
  assert.ok([...h.storage.keys()].every(k=>k.startsWith('alice/')));
 });
 

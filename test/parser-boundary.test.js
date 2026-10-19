@@ -5,9 +5,8 @@ import {fake} from './backend.test.js';
 
 const analyze=async output=>{
  const f=fake();f.a.generate.raw=async()=>({content:output});const s=createService(f.a);
- const {preview}=await s.run({type:'preview',chatId:'a',mode:'raw',connection:'conn',ids:['m']},'owner');
  const writes=[];const set=f.a.userStorage.setJson;f.a.userStorage.setJson=async(k,v,o)=>{writes.push(k);return set(k,v,o);};
- try{return {result:await s.run({type:'analyze',chatId:'a',revision:0,token:preview.token,confirm:true},'owner'),writes};}
+ try{return {result:await s.run({type:'analyze',chatId:'a',revision:0,mode:'raw',connection:'conn',source:{scope:'last',n:2}},'owner'),writes};}
  catch(error){return {error,writes};}
 };
 

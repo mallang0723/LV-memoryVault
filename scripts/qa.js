@@ -11,8 +11,8 @@ for(const [name,args] of [['tests',['--test','--test-isolation=none',...readdirS
 // Synthetic, in-process API adapter only. No provider socket, host data or credentials.
 const db=new Map();let providerRequest;
 const api={permissions:{has:()=>true},chats:{getActive:async()=>({id:'synthetic'}),get:async()=>({id:'synthetic',metadata:{}})},userStorage:{exists:async k=>db.has(k),getJson:async k=>db.get(k),setJson:async(k,v)=>db.set(k,v)},chat:{getMessages:async()=>[{id:'source',content:'Alice promised to return the blue notebook.',extra:{}}]},connections:{get:async id=>({id,name:'fake-local',provider:'fake',model:'fake-model'})},generate:{raw:async input=>{providerRequest=input;return {content:'[{"layer":"promises","text":"Return the blue notebook","scope":"public"}]'};}}};
-const service=createService(api),preview=await service.run({type:'preview',chatId:'synthetic',mode:'raw',connection:'fake-local',ids:['source']},'synthetic-user');
-const analyzed=await service.run({type:'analyze',chatId:'synthetic',revision:0,token:preview.preview.token,confirm:true},'synthetic-user');
+const service=createService(api);
+const analyzed=await service.run({type:'analyze',chatId:'synthetic',revision:0,mode:'raw',connection:'fake-local',source:{scope:'last',n:20}},'synthetic-user');
 writeFileSync(receipts+'/fake-provider-request.json',JSON.stringify({kind:'in-process fake adapter (not actual host/provider integration)',request:providerRequest,candidateCount:analyzed.state.candidates.length,approvedCount:analyzed.state.items.length},null,2));
 const output=readFileSync('dist/backend.js','utf8');
 const forbidden=['process.env','Bun.file','Bun.serve','fetch(','cortex','council','getMemories','node:fs','node:child_process'];

@@ -1,4 +1,4 @@
-import {empty,apply,clone,safe,parseCandidates,normalizeCandidates,skippedNotice,validate,inherit,review,fingerprint,publicItems,injectionText,MAX_INPUT_CHARS,sourceInput} from './core.js';
+import {empty,apply,clone,safe,parseCandidates,normalizeCandidates,skippedNotice,validate,inherit,review,fingerprint,publicItems,injectionText,MAX_INPUT_CHARS,sourceInput,selectSource,countOf} from './core.js';
 const validId=x=>typeof x==='string'&&/^[a-zA-Z0-9_-]{1,120}$/.test(x);
 // Lumiverse user IDs are URL-safe and up to 128 characters (host auth provisioning).
 const validUser=x=>typeof x==='string'&&/^[a-zA-Z0-9_-]{1,128}$/.test(x);
@@ -18,7 +18,7 @@ export const ANALYSIS_PROMPT=[
 ].join('\n');
 export const SKIP_NOTICE='이번 답변에는 기억을 넣지 못했습니다. 프롬프트에서 대화 기록의 출처를 확인할 수 없는 생성입니다(메시지를 하나로 합치는 프리셋, 대화 기록이 하나뿐인 이어쓰기 등). 보관함 패널의 \'최근 답변\' 표시로 다시 확인할 수 있습니다.';
 export function createService(api){
- const queues=new Map(), previews=new Map();
+ const queues=new Map();
  // Last injection outcome per user/chat, shown in the panel, plus the public memory
  // count seen by authenticated panel requests. Both live only in this worker.
  const injections=new Map(), publicCounts=new Map(), warned=new Set();
@@ -77,34 +77,27 @@ export function createService(api){
    if(r.type==='load')return response();
    if(r.type==='connections'){gate('generation');return {...response(),connections:(await api.connections.list(user)).map(x=>({id:x.id,name:x.name,model:x.model}))};}
    if(r.type==='export')return {...response(),json:JSON.stringify({version:1,items:state.items,candidates:state.candidates},null,2)};
-   // `index` is the message's position in the full host-ordered chat, so the number
-   // shown in the UI (index+1) stays stable when hidden messages are left out.
-   if(r.type==='sources'){gate('chat_mutation');const all=await api.chat.getMessages(chatId);return {...response(),total:all.length,messages:all.map((m,index)=>({m,index})).filter(({m})=>!m.extra?.hidden).map(({m,index})=>({id:m.id,content:m.content,index,send_date:m.send_date??m.created_at??null}))};}
-   if(r.type==='preview'){
-    gate('generation');gate('chat_mutation');
-    if(!['raw','quiet'].includes(r.mode)||!validId(r.connection))throw Error('모델 연결 확인 필요');
-    if(r.mode==='raw')await rawTarget(r.connection,user);
-    const all=await api.chat.getMessages(chatId),selected=all.filter(m=>r.ids?.includes(m.id)&&!m.extra?.hidden);
-    if(!selected.length||selected.length!==new Set(r.ids).size)throw Error('숨김/누락 원문 선택');
-    const input=sourceInput(selected,r.timeZone);if(input.length>MAX_INPUT_CHARS)throw Error('원문 크기 초과: 선택 입력 '+input.length.toLocaleString('en-US')+'자 / 한도 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자. 범위를 줄이거나 나눠서 분석하세요.');
-    const token=crypto.randomUUID();previews.set(user+':'+token,{chatId,revision:state.revision,mode:r.mode,connection:r.connection,input,ids:r.ids,evidence:await Promise.all(selected.map(async m=>({id:m.id,index:all.indexOf(m),fingerprint:await fingerprint(m.content)})))});
-    if(previews.size>100)previews.delete(previews.keys().next().value);
-    return {...response(),preview:{token,input,mode:r.mode,connection:r.connection}};
-   }
+   // Count and hidden positions only: message bodies never leave the worker for the panel.
+   if(r.type==='count'){gate('chat_mutation');return {...response(),...countOf(await api.chat.getMessages(chatId))};}
    if(r.revision!==state.revision)throw Error('revision 충돌: 새로고침 후 다시 편집');
-   let next,notice='';
+   let next,notice='',count=null;
    if(r.type==='analyze'){
-    gate('generation');gate('chat_mutation');const p=previews.get(user+':'+r.token);previews.delete(user+':'+r.token);
-    if(!r.confirm||!p||p.chatId!==chatId||p.revision!==state.revision)throw Error('입력/모델 명시 확인 필요');
-    const current=await api.chat.getMessages(chatId);for(const e of p.evidence){const m=current.find(m=>m.id===e.id&&!m.extra?.hidden);if(!m||await fingerprint(m.content)!==e.fingerprint)throw Error('원문 변경: 다시 확인');}
-    const target=p.mode==='raw'?await rawTarget(p.connection,user):{};
-    gate('generation');const generated=await api.generate[p.mode]({messages:[{role:'system',content:ANALYSIS_PROMPT},{role:'user',content:p.input}],connection_id:p.connection,userId:user,...target});
+    // One request: the scope (recent N or numeric ranges) is resolved here against the
+    // host's own messages; the panel never sends message IDs or text.
+    gate('generation');gate('chat_mutation');
+    if(!['raw','quiet'].includes(r.mode)||!validId(r.connection))throw Error('모델 연결 확인 필요: 설정 탭에서 분석 모드와 모델 연결을 고르세요.');
+    const target=r.mode==='raw'?await rawTarget(r.connection,user):{};
+    const all=await api.chat.getMessages(chatId),source=selectSource(all,r.source),messages=source.picked.map(x=>x.m);
+    const input=sourceInput(messages,r.timeZone);if(input.length>MAX_INPUT_CHARS)throw Error('원문 크기 초과: '+source.text+' 입력 '+input.length.toLocaleString('en-US')+'자 / 한도 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자. 범위를 줄이거나 나눠서 분석하세요.');
+    const evidence=await Promise.all(source.picked.map(async({m,index})=>({id:m.id,index,fingerprint:await fingerprint(m.content)})));
+    count={...countOf(all),analyzed:source.text};
+    gate('generation');const generated=await api.generate[r.mode]({messages:[{role:'system',content:ANALYSIS_PROMPT},{role:'user',content:input}],connection_id:r.connection,userId:user,...target});
     // Model scope claims are never trusted: every candidate starts as 'unknown'.
     const normalized=normalizeCandidates(parseCandidates(generated?.content));
     if(normalized.total&&!normalized.items.length){const raw=typeof generated?.content==='string'?generated.content.trim():JSON.stringify(generated?.content??'');
      throw Error('모델 응답의 후보 '+normalized.total+'개가 모두 형식 오류입니다(첫 항목: '+normalized.skipped[0].reason+'). 다시 시도하거나 다른 모델·모드를 선택하세요. 응답 앞부분: '+(raw.slice(0,120)||'(빈 응답)')+(raw.length>120?'…':''));}
-    notice=skippedNotice(normalized);
-    next=apply(state,{type:'propose',items:normalized.items.map(x=>({...x,id:crypto.randomUUID(),scope:'unknown',evidence:p.evidence,source:'선택 원문 모델 후보'}))});
+    notice=skippedNotice(normalized);count.added=normalized.items.length;
+    next=apply(state,{type:'propose',items:normalized.items.map(x=>({...x,id:crypto.randomUUID(),scope:'unknown',evidence,source:'선택 원문 모델 후보 · '+source.text}))});
    }else if(r.type==='review'){gate('chat_mutation');next=await review(state,await api.chat.getMessages(chatId));next.revision++;}
    else {
     if(r.type==='sync')throw Error('영구 책 출력은 제거되었습니다');
@@ -134,7 +127,7 @@ export function createService(api){
    try{await api.userStorage.setJson(path,next,{userId:user});}catch{
     const actual=await read(path,user);if(JSON.stringify(actual)!==JSON.stringify(next))throw Error('저장 미확정: 재전송하지 말고 새로고침/백업 확인');
    }
-   state=next;return {...response(),saved:true,...(notice?{notice:'저장 완료 · '+notice}:{})};
+   state=next;return {...response(),saved:true,...(count||{}),...(count?{notice:count.analyzed+' 분석 · 후보 '+count.added+'개 추가'+(notice?' · '+notice:'')+' · 검토 대기에서 확인 후 승인하세요'}:notice?{notice:'저장 완료 · '+notice}:{})};
   });queues.set(key,task);try{const out=await task;if(out?.state)remember(publicCounts,key,publicItems(out.state).length);const injection=injections.get(key);return injection?{...out,injection}:out;}finally{if(queues.get(key)===task)queues.delete(key);}
  }
  async function intercept(messages,context){

@@ -40,8 +40,7 @@ test('SHA256 fingerprints bound long-source storage and legacy evidence still ma
  const f=fake(),s=createService(f.a);f.a.chat.getMessages=async()=>[{id:'m',content:text}];
  f.a.generate.raw=async()=>({content:JSON.stringify(Array.from({length:10},()=>({layer:'elements',text:'candidate'})))});
  for(let i=0;i<5;i++){
-  const p=await s.run({type:'preview',chatId:'a',mode:'raw',connection:'fake',ids:['m']},'owner');
-  await s.run({type:'analyze',chatId:'a',revision:i,token:p.preview.token,confirm:true},'owner');
+  await s.run({type:'analyze',chatId:'a',revision:i,mode:'raw',connection:'fake',source:{scope:'last',n:2}},'owner');
  }
  const stored=f.db.get('chats/a/data.json');assert.ok(JSON.stringify(stored).length<200000);assert.ok(!JSON.stringify(stored).includes(text));
  assert.equal((await s.run({type:'export',chatId:'a'},'owner')).state.revision,5);

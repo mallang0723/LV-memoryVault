@@ -21,23 +21,21 @@ test('quarantined candidates roundtrip, resume approval and status validation',(
  for(const field of ['review','resumeRequired','branchHold','importedScope','hold']) assert.equal(publicItems({items:[{...value,scope:'public',[field]:true}]}).length,0);
 });
 for(const mode of ['raw','quiet']){
- test(mode+' preview requires explicit valid ID without provider calls',async()=>{
+ test(mode+' analyze requires an explicit valid connection ID without provider calls',async()=>{
   const f=fake(),s=createService(f.a);let calls=0;
   f.a.generate.raw=f.a.generate.quiet=async()=>{calls++;return {content:'[]'};};
-  for(const connection of [undefined,'','   ','bad/id',42]) await assert.rejects(()=>s.run({type:'preview',chatId:'a',mode,connection,ids:['m']},'owner'),/모델 연결/);
+  for(const connection of [undefined,'','   ','bad/id',42]) await assert.rejects(()=>s.run({type:'analyze',chatId:'a',revision:0,mode,connection,source:{scope:'last',n:2}},'owner'),/모델 연결/);
+  await assert.rejects(()=>s.run({type:'analyze',chatId:'a',revision:0,mode:'other',connection:'selected-local',source:{scope:'last',n:2}},'owner'),/모델 연결/);
   assert.equal(calls,0);
  });
- test(mode+' explicit preview token forwards immutable mode, ID and input',async()=>{
+ test(mode+' analyze sends only host text for the chosen scope; caller text and IDs are ignored',async()=>{
   const f=fake(),s=createService(f.a),calls=[];
   for(const kind of ['raw','quiet'])f.a.generate[kind]=async input=>{calls.push({kind,input});return {content:'[]'};};
-  const request={type:'preview',chatId:'a',mode,connection:'selected-local',ids:['m']};
-  const {preview}=await s.run(request,'owner');const token=preview.token;
-  assert.equal(preview.connection,'selected-local');assert.equal(preview.input,'[메시지 전송 시각 기준: UTC (사용자 시간대 미확인)]\n\n[전송 시각 미상] public');assert.equal(preview.mode,mode);assert.equal(calls.length,0);
-  request.connection='changed';request.ids[0]='hidden';preview.connection='tampered';preview.input='tampered';preview.mode='tampered';
-  await s.run({type:'analyze',chatId:'a',revision:0,token,confirm:true,mode:mode==='raw'?'quiet':'raw',connection:'override',input:'override',ids:['hidden']},'owner');
+  await s.run({type:'analyze',chatId:'a',revision:0,mode,connection:'selected-local',source:{scope:'last',n:2},input:'override',ids:['hidden'],messages:[{content:'override'}]},'owner');
   assert.equal(calls.length,1);assert.equal(calls[0].kind,mode);assert.equal(calls[0].input.connection_id,'selected-local');
+  assert.equal(calls[0].input.messages.length,2);
   assert.equal(calls[0].input.messages[1].content,'[메시지 전송 시각 기준: UTC (사용자 시간대 미확인)]\n\n[전송 시각 미상] public');assert.match(calls[0].input.messages[0].content,/JSON array of memory candidates/);
-  await assert.rejects(()=>s.run({type:'analyze',chatId:'a',revision:1,token,confirm:true},'owner'),/명시 확인/);assert.equal(calls.length,1);
+  await assert.rejects(()=>s.run({type:'analyze',chatId:'a',revision:0,mode,connection:'selected-local',source:{scope:'last',n:2}},'owner'),/revision 충돌/);assert.equal(calls.length,1);
  });
 }
 test('edit evidence ignores caller index',async()=>{
