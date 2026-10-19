@@ -781,11 +781,11 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
   const connection=select('모델 연결',[['','연결을 선택하세요'],...ui.connections.map(x=>[x.id,x.name+' · '+(x.model||'(모델 미지정)')])],c,ui.connection||'');connection.onchange=()=>ui.connection=connection.value;
   button('모델 목록 새로고침',()=>send('connections'),c,'mmc-sm');
   el('p','분석 버튼을 누르면 고른 범위의 원문이 이 연결로 바로 전송됩니다. 비밀이 담긴 대화는 범위에서 빼세요. 모델 결과는 후보로만 들어가며 자동 승인하지 않습니다. 선택은 패널을 다시 불러오기 전까지 유지됩니다.',c,'lv-warning');
-  // Lumiverse's own chat summary as reference. Saved on the server for all chats (default on).
-  const loom=check('루미버스 요약(Loom) 참고',c,ui.loom?.enabled!==false);loom.dataset.loom='toggle';
+  // Lumiverse's own chat summary as reference. Saved on the server for all chats. Opt-in: off until the user turns it on.
+  const loom=check('루미버스 요약(Loom) 참고 (선택)',c,ui.loom?.enabled===true);loom.dataset.loom='toggle';
   loom.onchange=()=>send('loomSettings',{enabled:loom.checked});
-  el('small','켜면 분석·자동 분석·기억 점검 때 루미버스가 이 채팅에 저장한 요약(Summary)을 원문 뒤에 참고용으로 함께 보냅니다. 최대 '+LOOM_CAP.toLocaleString('en-US')+'자, 넘으면 앞부분을 자르고, 원문을 먼저 채운 뒤 남는 한도만 씁니다. 요약은 날짜·흐름 참고용이며 후보는 고른 원문에서만 뽑고, 원문과 다르면 원문이 우선합니다. 요약은 기억으로 저장하지 않습니다. 모든 채팅에 공통입니다.',c,'mmc-muted');
-  el('p','요약에는 고른 범위 밖의 대화 내용도 담겨 있습니다. 요약에 비밀이 들어 있다면 이 설정을 끄세요.',c,'lv-warning');
+  el('small','기본 꺼짐. 직접 켤 때만 분석·자동 분석·기억 점검 때 루미버스가 이 채팅에 저장한 요약(Summary)을 원문 뒤에 참고용으로 함께 보냅니다. 끈 상태에서는 요약을 보내지 않습니다. 최대 '+LOOM_CAP.toLocaleString('en-US')+'자, 넘으면 앞부분을 자르고, 원문을 먼저 채운 뒤 남는 한도만 씁니다. 요약은 날짜·흐름 참고용이며 후보는 고른 원문에서만 뽑고, 원문과 다르면 원문이 우선합니다. 요약은 기억으로 저장하지 않습니다. 모든 채팅에 공통입니다.',c,'mmc-muted');
+  el('p','요약에는 고른 범위 밖의 대화 내용도 담겨 있습니다. 요약에 비밀이 들어 있다면 켜지 마세요.',c,'lv-warning');
   autoSettings(main);
  }
  // Per-chat automatic analysis. Saved on the server apart from memories (no undo step).

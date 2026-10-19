@@ -459,7 +459,8 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
  };
  const readAuto=async(chatId,user)=>{try{if(!await api.userStorage.exists(autoPath(chatId),user))return autoOff();return cleanAuto(safe(await api.userStorage.getJson(autoPath(chatId),{userId:user})));}catch{return autoOff();}};
  const writeAuto=(chatId,user,value)=>api.userStorage.setJson(autoPath(chatId),safe(value),{userId:user});
- const readLoom=async user=>{try{if(!await api.userStorage.exists(SETTINGS_PATH,user))return true;return safe(await api.userStorage.getJson(SETTINGS_PATH,{userId:user}))?.loom!==false;}catch{return true;}};
+ // Opt-in: only an explicitly saved true turns it on; missing, unreadable or anything else is off.
+ const readLoom=async user=>{try{if(!await api.userStorage.exists(SETTINGS_PATH,user))return false;return safe(await api.userStorage.getJson(SETTINGS_PATH,{userId:user}))?.loom===true;}catch{return false;}};
  // Panel view of the option for one chat: on/off and how many summary characters would
  // be sent at most (the real amount can shrink to fit the raw input). Never the text.
  const loomInfo=async(chat,user)=>{const enabled=await readLoom(user);return {enabled,chars:enabled?loomBlock(loomText(chat)).chars:0};};

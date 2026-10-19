@@ -5,10 +5,11 @@ import {setup} from '../src/frontend.js';
 import {loomText,loomBlock,loomLabel,sourceInput,LOOM_CAP,MAX_INPUT_CHARS} from '../src/core.js';
 // Lumiverse's own chat summary (chat.metadata.loom_summary) as a lower-priority
 // reference block after the raw input: budgeted, capped, cut from the start, never stored.
+// Opt-in: off unless the user saved it on. fake() opts in unless {optIn:false}.
 
 const msg=(i,user,content)=>({id:'m'+i,is_user:user,content:content??((user?'USER_':'BOT_')+i),send_date:1760000000+i,extra:{}});
-function fake(messages,summary){
- const db=new Map(),calls=[];let reply='[{"layer":"promises","text":"[이야기 1일차] 원문 약속","scope":"public"}]';
+function fake(messages,summary,{optIn=true}={}){
+ const db=new Map(optIn?[['settings.json',{loom:true}]]:[]),calls=[];let reply='[{"layer":"promises","text":"[이야기 1일차] 원문 약속","scope":"public"}]';
  const api={permissions:{has:()=>true},
   chats:{getActive:async()=>({id:'a'}),get:async(id,u)=>u==='owner'&&id==='a'?{id,metadata:summary===undefined?{}:{loom_summary:f.summary}}:null},
   userStorage:{exists:async k=>db.has(k),getJson:async k=>structuredClone(db.get(k)),setJson:async(k,v)=>{db.set(k,structuredClone(v));}},
@@ -86,7 +87,7 @@ test('every range of a multi-range run gets the summary; the setting is per user
  const msgs=Array.from({length:6},(_,i)=>msg(i+1,i%2===0)),f=fake(msgs,SUMMARY),s=createService(f.api);
  let rev=0;for(const [a,z] of [[1,2],[4,6]]){const r=await s.run({type:'analyze',chatId:'a',revision:rev,mode:'raw',connection:'c1',source:{scope:'range',ranges:[{start:a,end:z}]}},'owner');rev=r.state.revision;}
  assert.equal(f.calls.length,2);for(const c of f.calls)assert.ok(c.messages[1].content.endsWith(SUMMARY+'\n[/LUMIVERSE SUMMARY]'));
- assert.deepEqual((await s.run({type:'load',chatId:'a'},'owner')).loom,{enabled:true,chars:SUMMARY.length},'default on');
+ assert.deepEqual((await s.run({type:'load',chatId:'a'},'owner')).loom,{enabled:true,chars:SUMMARY.length},'opted in');
  await s.run({type:'loomSettings',chatId:'a',enabled:false},'owner');
  assert.deepEqual((await s.run({type:'load',chatId:'a'},'owner')).loom,{enabled:false,chars:0});
  assert.deepEqual((await s.run({type:'count',chatId:'a'},'owner')).loom,{enabled:false,chars:0});
@@ -126,7 +127,7 @@ test('memory check: summary after the evidence, its own rules, evidence never dr
  assert.ok(!input.includes('OLD'));assert.ok(input.includes('NEW\n[/LUMIVERSE SUMMARY]'));
 });
 
-test('panel: toggle in the settings tab (default on) and the summary line shows the size or no summary',()=>{
+test('panel: toggle in the settings tab (opt-in) and the summary line shows the size or no summary',()=>{
  const {document}=parseHTML('<html><body></body></html>');globalThis.document=document;
  const root=document.createElement('div');document.body.append(root);const sent=[];let listener;
  const cleanup=setup({ui:{registerDrawerTab:()=>({root,destroy(){}})},sendToBackend:r=>sent.push(r),onBackendMessage:fn=>{listener=fn;return()=>{};},events:{on:()=>()=>{}}});
@@ -138,10 +139,55 @@ test('panel: toggle in the settings tab (default on) and the summary line shows 
  assert.equal(line(),'대화 1–5 (5개) · 루미버스 요약 참고 (1,234자)');
  click('대화 개수 새로고침');reply({total:5,hidden:[],loom:{enabled:true,chars:0}});assert.equal(line(),'대화 1–5 (5개) · 요약 없음');
  click('설정');const toggle=root.querySelector('[data-loom=toggle]');assert.ok(toggle);assert.equal(toggle.checked,true);
- assert.equal(toggle.getAttribute('aria-label'),'루미버스 요약(Loom) 참고');
+ assert.equal(toggle.getAttribute('aria-label'),'루미버스 요약(Loom) 참고 (선택)');
  toggle.checked=false;toggle.onchange();assert.deepEqual([sent.at(-1).type,sent.at(-1).enabled],['loomSettings',false]);
  reply({loom:{enabled:false,chars:0},notice:'루미버스 요약 참고 꺼짐'});
  assert.equal(root.querySelector('[data-loom=toggle]').checked,false);
  click('분석');assert.equal(line(),'대화 1–5 (5개)','off: no summary note');
  cleanup();
+});
+
+test('fresh user: default off, no Loom block in analysis, automatic analysis or memory check',async()=>{
+ const f=fake(two(),SUMMARY,{optIn:false}),s=createService(f.api,{autoDelayMs:0});
+ assert.deepEqual((await s.run({type:'load',chatId:'a'},'owner')).loom,{enabled:false,chars:0},'default off');
+ assert.deepEqual((await s.run({type:'count',chatId:'a'},'owner')).loom,{enabled:false,chars:0});
+ const r=await analyze(s);
+ assert.equal(f.calls[0].messages[0].content,ANALYSIS_PROMPT);assert.equal(f.calls[0].messages[1].content,sourceInput(two(),'Asia/Seoul'));
+ assert.equal(r.notice,'대화 1–2 (2개) 분석 · 후보 1개 추가 · 검토 대기에서 확인 후 승인하세요');
+ await s.run({type:'autoSettings',chatId:'a',enabled:true,every:3,mode:'raw',connection:'c1',timeZone:'Asia/Seoul'},'owner');
+ f.messages.push(...Array.from({length:6},(_,k)=>msg(10+k,k%2===0)));
+ assert.equal((await s.onGenerationEnded({chatId:'a',messageId:'x',generationType:'normal'},'owner')).ok,true);
+ const d=f.db.get('chats/a/data.json');d.items=[{id:'p1',layer:'promises',text:'[1일차] 공책 반환 약속',scope:'public',status:'active',evidence:[]}];f.db.set('chats/a/data.json',d);
+ f.setReply('[]');await s.run({type:'health',chatId:'a',mode:'raw',connection:'c1'},'owner');
+ assert.equal(f.calls.length,3);
+ for(const c of f.calls){
+  const all=c.messages.map(x=>x.content).join('\n');
+  for(const part of ['LUMIVERSE SUMMARY','도서관','같은 반',LOOM_ANALYSIS_RULES,LOOM_HEALTH_RULES])assert.ok(!all.includes(part),part);
+ }
+ assert.equal(f.calls[2].messages[0].content,HEALTH_PROMPT);
+ assert.ok(!f.db.has('settings.json'),'reading the default writes nothing');
+});
+
+test('only an explicitly saved true turns it on; anything else reads as off',async()=>{
+ for(const [saved,on] of [[{},false],[{loom:'true'},false],[{loom:1},false],[{loom:null},false],[{loom:false},false],[{loom:true},true]]){
+  const f=fake(two(),SUMMARY,{optIn:false});f.db.set('settings.json',saved);const s=createService(f.api);
+  assert.equal((await s.run({type:'load',chatId:'a'},'owner')).loom.enabled,on,JSON.stringify(saved));
+  await analyze(s);assert.equal(f.calls[0].messages[1].content.includes('[LUMIVERSE SUMMARY]'),on,JSON.stringify(saved));
+ }
+ // Unreadable settings fail closed (off), and analysis still runs.
+ const g=fake(two(),SUMMARY,{optIn:false});g.db.set('settings.json',{loom:true});g.api.userStorage.getJson=async k=>{if(k==='settings.json')throw Error('broken');return structuredClone(g.db.get(k));};
+ const s=createService(g.api);await analyze(s);
+ assert.equal(g.calls[0].messages[1].content,sourceInput(two(),'Asia/Seoul'));
+});
+
+test('panel: the toggle starts unchecked when the backend has not reported the option on',()=>{
+ const {document}=parseHTML('<html><body></body></html>');globalThis.document=document;
+ for(const loom of [undefined,{enabled:false,chars:0}]){
+  const root=document.createElement('div');document.body.append(root);const sent=[];let listener;
+  const cleanup=setup({ui:{registerDrawerTab:()=>({root,destroy(){}})},sendToBackend:r=>sent.push(r),onBackendMessage:fn=>{listener=fn;return()=>{};},events:{on:()=>()=>{}}});
+  listener({requestId:sent.at(-1).requestId,ok:true,chatId:'a',state:{revision:0,items:[],candidates:[],undo:[]},...(loom?{loom}:{})});
+  [...root.querySelectorAll('button')].find(x=>x.textContent==='설정').click();
+  assert.equal(root.querySelector('[data-loom=toggle]').checked,false,JSON.stringify(loom));
+  cleanup();root.remove();
+ }
 });
