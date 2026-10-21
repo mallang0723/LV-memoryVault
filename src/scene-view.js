@@ -1,4 +1,4 @@
-import {MAX_RANGES,MAX_INPUT_CHARS,sourceSummary,resolveScope,nextRange,spanLabel,localTimeZone,strictInt} from './core.js';
+import {MAX_RANGES,MAX_INPUT_CHARS,batchSummary,sourceSummary,resolveScope,nextRange,spanLabel,localTimeZone,strictInt} from './core.js';
 import {SCENE_LIMITS,SCENE_BOOK_PREFIX} from './chronicle.js';
 // 장면록 section of the 장면 기억 tab. The panel holds the message count and hidden
 // positions only; recording sends numbers, and the service reads the messages.
@@ -28,12 +28,13 @@ export function createSceneView({el,button,card,field,check,send,get,ui,confirm,
  const sceneStep=reply=>{
   const b=ui.sceneBatch;if(!b)return false;
   const label=spanLabel([b.spans[b.index]]);
-  if(reply.ok)b.ok.push(label);else b.fail.push(label+' – '+String(reply.error||'알 수 없는 오류'));
+  if(reply.ok){b.ok.push(label);if(/나눠 기록|건너뜀|실패/.test(reply.notice||''))b.notes.push(String(reply.notice));}else b.fail.push({label,error:reply.error});
   b.index++;
   if(b.index<b.spans.length){sendSpan(b);return true;}
   ui.sceneBatch=null;
   const box=ui.sceneRanges?.[get().chatId||''];if(box&&b.ok.length)box.touched=false;
-  ui.status=(b.spans.length>1?b.spans.length+'개 범위 중 '+b.ok.length+'개 기록':b.ok.length?(reply.notice||'기록 완료'):'')+(b.fail.length?(b.spans.length>1?', 실패: ':'기록 실패: ')+b.fail.join(' / '):'')+(b.ok.length&&b.spans.length>1?' · 검토 대기에서 확인 후 승인하세요':'');
+  if(b.spans.length===1){ui.status=b.ok.length?(reply.notice||'기록 완료'):'기록 실패: '+String(b.fail[0].error||'알 수 없는 오류');ui.statusDetail=null;return true;}
+  const r=batchSummary({total:b.spans.length,ok:b.ok.length,fails:b.fail,notes:b.notes,done:'기록 완료'});ui.status=r.summary;ui.statusDetail={for:r.summary,text:r.detail};
   return true;
  };
  const sendSpan=b=>{const [a,z]=b.spans[b.index];ui.status=(b.spans.length>1?'범위 '+(b.index+1)+'/'+b.spans.length+' ':'')+spanLabel([[a,z]])+' 기록 중…';send('sceneRecord',{source:{scope:'range',ranges:[{start:String(a),end:String(z)}]},...b.opts},{scene:true,after:sceneStep});};
@@ -52,9 +53,9 @@ export function createSceneView({el,button,card,field,check,send,get,ui,confirm,
   const run=button(ui.sceneBatch?'기록 중…':'기록하기',()=>{
    if(ui.sceneBatch)return;const s=update();if(!s.ok){ui.note(s.error);return;}
    if(!ui.connection){ui.note('설정 탭에서 모델 연결을 먼저 고르세요.');return;}
-   ui.sceneBatch={spans:s.spans,index:0,ok:[],fail:[],opts:model()};run.disabled=true;run.textContent='기록 중…';sendSpan(ui.sceneBatch);ui.note(ui.status);
+   ui.sceneBatch={spans:s.spans,index:0,ok:[],fail:[],notes:[],opts:model()};run.disabled=true;run.textContent='기록 중…';sendSpan(ui.sceneBatch);ui.note(ui.status);
   },wrap,'mmc-primary lv-run');run.dataset.run='scene';run.setAttribute('aria-label','장면 기록하기');
-  el('small','누르면 구간마다 원문(숨김 메시지 포함, 구간당 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자까지)을 설정 탭의 모델 연결로 한 번씩 보내 장면 후보를 만듭니다. 자동 재시도는 없습니다. 같은 응답의 약속·진행 흐름은 기억 검토 대기 후보로 들어갑니다. 승인 전에는 아무것도 주입하지 않습니다.',wrap,'mmc-muted');
+  el('small','누르면 구간마다 원문(숨김 메시지 포함, 구간당 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자까지, 넘는 구간은 메시지 경계에서 나눠 조각마다 장면 하나)을 설정 탭의 모델 연결로 한 번씩 보내 장면 후보를 만듭니다. 자동 재시도는 없습니다. 같은 응답의 약속·진행 흐름은 기억 검토 대기 후보로 들어갑니다. 승인 전에는 아무것도 주입하지 않습니다.',wrap,'mmc-muted');
   function update(){
    const scope={scope:'range',ranges:box.rows};
    const s=!count?resolveScope(scope,Number.MAX_SAFE_INTEGER):sourceSummary(scope,count.total,count.hidden);

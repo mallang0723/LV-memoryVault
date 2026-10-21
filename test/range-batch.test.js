@@ -48,12 +48,23 @@ test('each range call records its own range in the candidate source and evidence
  assert.deepEqual([first.evidence[0].index,first.evidence.at(-1).index],[9,19]);assert.deepEqual([second.evidence[0].index,second.evidence.at(-1).index],[20,29]);
 });
 
-test('a range over the input limit fails alone and asks to split it',async()=>{
+test('a range over the input limit is split at message boundaries: one call per chunk, in order',async()=>{
  const big=chat(30).map((m,i)=>i>=20?{...m,content:'x'.repeat(8000)}:m);
+ const api=fakeApi(big,()=>'[{"layer":"elements","text":"[1일차] 후보","scope":"public"}]'),s=createService(api);
+ const out=await ask(s,0,[{start:21,end:30}]);
+ assert.equal(api.calls.length,2,'80,000 characters → two chunks');
+ for(const c of api.calls)assert.ok(c.messages[1].content.length<=MAX_INPUT_CHARS);
+ assert.match(out.notice,/대화 21–30 → 21–27, 28–30으로 나눠 분석/);assert.equal(out.saved,true);
+ const sources=[...new Set(out.state.candidates.map(x=>x.source))];assert.deepEqual(sources,['선택 원문 모델 후보 · 대화 21–27 (7개)','선택 원문 모델 후보 · 대화 28–30 (3개)']);
+ for(const x of out.state.candidates)assert.ok(x.evidence.every(e=>x.source.includes('21–27')?e.index<=26:e.index>=27),'each candidate keeps its own chunk as evidence');
+});
+test('a single message over the limit is skipped with a note, never cut; a range of only that message is refused',async()=>{
+ const big=chat(12).map((m,i)=>i===5?{...m,content:'y'.repeat(MAX_INPUT_CHARS+5)}:m);
  const api=fakeApi(big),s=createService(api);
- await assert.rejects(()=>ask(s,0,[{start:21,end:30}]),e=>{assert.match(e.message,/원문 크기 초과: 대화 21–30/);assert.match(e.message,new RegExp(MAX_INPUT_CHARS.toLocaleString('en-US')+'자'));assert.match(e.message,/더 작은 범위 여러 개로 나눠서/);return true;});
- assert.equal(api.calls.length,0);
- const ok=await ask(s,0,[{start:1,end:10}]);assert.equal(api.calls.length,1);assert.equal(ok.saved,true);
+ const out=await ask(s,0,[{start:1,end:12}]);
+ assert.equal(api.calls.length,2);assert.ok(api.calls.every(c=>!c.messages[1].content.includes('yyyy')));
+ assert.match(out.notice,/대화 1–12 → 1–5, 7–12으로 나눠 분석/);assert.match(out.notice,/메시지 6은 하나만으로 60,000자 한도를 넘어 건너뜀\(잘라 보내지 않음\)/);
+ await assert.rejects(()=>ask(s,out.state.revision,[{start:6,end:6}]),/하나만으로도 60,000자 한도를 넘어/);assert.equal(api.calls.length,2);
 });
 
 const mount=()=>{
@@ -69,8 +80,8 @@ const mount=()=>{
  const value=label=>root.querySelector(`[aria-label="${label}"]`)?.value;
  const open=(total,hidden=[])=>{click('분석');reply({total,hidden});};
  const connect=()=>{click('설정');reply({connections:[{id:'c1',name:'A',model:'gpt-x'}]});const s=root.querySelector('[aria-label="모델 연결"]');for(const o of s.querySelectorAll('option'))o.toggleAttribute('selected',o.getAttribute('value')==='c1');s.onchange();click('분석');};
- const run=()=>root.querySelector('[data-run]'),status=()=>root.querySelector('[role=status]').textContent;
- return {root,sent,listener,click,button,reply,type,value,open,connect,run,status,st,cleanup};
+ const run=()=>root.querySelector('[data-run]'),status=()=>root.querySelector('[role=status]').textContent,detail=()=>{const m=root.querySelector('[data-status-more]');if(m&&m.getAttribute('aria-expanded')!=='true')m.click();return root.querySelector('[data-status-detail]')?.textContent||'';};
+ return {root,sent,listener,click,button,reply,type,value,open,connect,run,status,detail,st,cleanup};
 };
 const ranges=(v,list)=>{v.click('범위');list.forEach(([a,b],k)=>{if(k)v.click('+ 범위 추가');v.type('범위 '+(k+1)+' 시작',String(a));v.type('범위 '+(k+1)+' 끝',String(b));});};
 
@@ -102,7 +113,8 @@ test('two ranges run as two calls in order, with progress, and a failed range ke
  assert.equal(v.run().textContent,'범위 2/2 분석 중…');assert.ok(v.run().disabled);
  v.listener({requestId:req.requestId,ok:false,error:'모델 응답을 JSON 배열로 해석하지 못했습니다.'});
  assert.equal(v.sent.length,before+2);
- assert.equal(v.status(),'2개 범위 중 1개 성공 (후보 3개 추가), 실패: 범위 2 (대화 21–30) – 모델 응답을 JSON 배열로 해석하지 못했습니다. · 검토 대기에서 확인 후 승인하세요');
+ assert.equal(v.status(),'2개 범위 중 1개 성공 (후보 3개 추가) · 1개 실패 (모델 응답을 JSON 배열로 해석하지 못했습니다) · 검토 대기에서 확인 후 승인하세요');
+ assert.equal(v.detail(),'2개 범위 중 1개 성공 (후보 3개 추가) · 1개 실패 (모델 응답을 JSON 배열로 해석하지 못했습니다) · 검토 대기에서 확인 후 승인하세요\n\n범위 2 (대화 21–30) – 모델 응답을 JSON 배열로 해석하지 못했습니다.');
  assert.ok(v.root.querySelector('[data-tab="overview"][aria-current="page"]'),'opens the review queue');
  v.click('분석');assert.equal(v.run().textContent,'분석');assert.equal(v.run().disabled,false);
  v.cleanup();
@@ -114,14 +126,15 @@ test('a failure in the first range does not stop the next one',()=>{
  v.listener({requestId:req.requestId,ok:false,error:'원문 크기 초과: 대화 10–20 (11개) 입력 70,000자 / 한도 60,000자. 이 범위를 더 작은 범위 여러 개로 나눠서 분석하세요.'});
  req=v.sent.at(-1);assert.deepEqual(req.source.ranges,[{start:'21',end:'30'}]);assert.equal(req.revision,0);
  v.reply({saved:true,added:2,state:v.st(1),notice:'대화 21–30 (10개) 분석 · 후보 2개 추가'});
- assert.match(v.status(),/^2개 범위 중 1개 성공 \(후보 2개 추가\), 실패: 범위 1 \(대화 10–20\) – 원문 크기 초과/);
+ assert.match(v.status(),/^2개 범위 중 1개 성공 \(후보 2개 추가\) · 1개 실패 \(원문 크기 초과\)/);assert.match(v.detail(),/범위 1 \(대화 10–20\) – 원문 크기 초과/);
  v.cleanup();
 });
 
 test('all ranges failing reports each and stays on the analysis view',()=>{
  const v=mount();v.open(40);v.connect();ranges(v,[[1,5],[6,10]]);v.run().click();
  v.listener({requestId:v.sent.at(-1).requestId,ok:false,error:'A'});v.listener({requestId:v.sent.at(-1).requestId,ok:false,error:'B'});
- assert.equal(v.status(),'2개 범위 중 0개 성공, 실패: 범위 1 (대화 1–5) – A / 범위 2 (대화 6–10) – B');
+ assert.equal(v.status(),'2개 범위 모두 실패');assert.equal(v.detail(),'범위 1 (대화 1–5) – A\n범위 2 (대화 6–10) – B');
+ v.root.querySelector('[data-status-close]').click();assert.equal(v.root.querySelector('.lv-status').hidden,true,'closed');assert.equal(v.status(),'');
  assert.equal(v.run().textContent,'분석');assert.equal(v.run().disabled,false);
  v.cleanup();
 });

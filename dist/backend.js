@@ -253,6 +253,17 @@ export function nextRange(prev,total){
  const start=hi+1;if(start>total)return null;
  return {start:String(start),end:String(Math.min(total,start+(hi-lo)))};
 }
+// Panel status for a multi-range run: one short summary line plus details (one line
+// per range note or failure) shown only when the user expands it.
+const shortReason=e=>String(e||'알 수 없는 오류').split(/[:.(\n]/)[0].trim().slice(0,30)||'알 수 없는 오류';
+export function batchSummary({total,ok,added=null,fails=[],notes=[],noun='범위',done='분석 완료',next='검토 대기에서 확인 후 승인하세요'}){
+ const reasons=[...new Set(fails.map(f=>shortReason(f.error)))];
+ const tally=added===null?'':' (후보 '+added+'개 추가)';
+ const summary=fails.length&&!ok?total+'개 '+noun+' 모두 실패'+(reasons.length===1?' — '+reasons[0]:'')
+  :fails.length?total+'개 '+noun+' 중 '+ok+'개 성공'+tally+' · '+fails.length+'개 실패'+(reasons.length===1?' ('+reasons[0]+')':'')
+  :total+'개 '+noun+' '+done+tally;
+ return {summary:summary+(ok&&next?' · '+next:''),detail:[...notes.filter(Boolean),...fails.map(f=>f.label+' – '+String(f.error||'알 수 없는 오류'))].join('\n')};
+}
 export const spanLabel=spans=>'대화 '+spans.map(([a,b])=>a===b?String(a):a+'–'+b).join(', ');
 // Panel summary from the count only: "대화 120–141 (22개, 숨김 5개 포함)".
 export function sourceSummary(scope,total,hidden=[]){
@@ -285,11 +296,33 @@ export function sentStamp(m,zone){
  let p;try{p=Object.fromEntries(formatters.get(tz).formatToParts(new Date(ms)).map(x=>[x.type,x.value]));}catch{return null;}
  return p.year+'-'+p.month+'-'+p.day+' '+(p.hour==='24'?'00':p.hour)+':'+p.minute;
 }
+const sourceHeader=zone=>'[메시지 전송 시각 기준: '+(validTimeZone(zone)||'UTC (사용자 시간대 미확인)')+']';
+const sourceLine=(m,zone)=>{const t=sentStamp(m,validTimeZone(zone));return (t?'[전송 '+t+'] ':'[전송 시각 미상] ')+String(m.content??'');};
 export function sourceInput(messages,zone){
  if(!messages.length)return '';
- const tz=validTimeZone(zone),header='[메시지 전송 시각 기준: '+(tz||'UTC (사용자 시간대 미확인)')+']';
- return [header,...messages.map(m=>{const t=sentStamp(m,tz);return (t?'[전송 '+t+'] ':'[전송 시각 미상] ')+String(m.content??'');})].join('\n\n');
+ return [sourceHeader(zone),...messages.map(m=>sourceLine(m,zone))].join('\n\n');
 }
+// A span too large for one call, split at message boundaries into consecutive chunks
+// whose sourceInput() each fits `limit` (oldest first). A message that cannot fit even
+// alone is never cut: it is returned in `skipped` and the chunks run around it.
+// items: [{m,index}] in chat order.
+export function splitForInput(items,zone,limit=MAX_INPUT_CHARS){
+ const head=sourceHeader(zone).length,chunks=[],skipped=[];let cur=[],len=head;
+ for(const it of items){
+  const size=2+sourceLine(it.m,zone).length;
+  if(head+size>limit){if(cur.length){chunks.push(cur);cur=[];len=head;}skipped.push(it);continue;}
+  if(cur.length&&len+size>limit){chunks.push(cur);cur=[];len=head;}
+  cur.push(it);len+=size;
+ }
+ if(cur.length)chunks.push(cur);
+ return {chunks,skipped};
+}
+// "대화 1–30 → 1–12, 13–24, 25–30으로 나눠" plus skipped single messages.
+export const chunkSpan=chunk=>[chunk[0].index+1,chunk.at(-1).index+1];
+export const splitNote=(label,split,verb='분석')=>{
+ const parts=split.chunks.map(c=>{const [a,b]=chunkSpan(c);return a===b?String(a):a+'–'+b;});
+ return [split.chunks.length>1?label+' → '+parts.join(', ')+'으로 나눠 '+verb:'',split.skipped.length?'메시지 '+split.skipped.map(x=>x.index+1).join(', ')+'은 하나만으로 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자 한도를 넘어 건너뜀(잘라 보내지 않음)':''].filter(Boolean).join(' · ');
+};
 // Lumiverse's own chat summary (Loom Summary): one text per chat, stored by the host in
 // chat.metadata.loom_summary (read through chats.get, the existing `chats` permission).
 // Reference only, never a memory: it goes after the raw input, only into the room the
@@ -887,32 +920,44 @@ export function createChronicle(api,{gate,rawTarget}){
   let s=await load(chatId,user,chat);
   if(s.candidates.length>=SCENE_MAX_CANDIDATES)throw Error('검토 대기 장면이 '+SCENE_MAX_CANDIDATES+'개입니다. 먼저 승인하거나 버리세요.');
   const all=await api.chat.getMessages(chatId),source=selectSource(all,r.source),[start,end]=source.spans[0];
-  const input=sourceInput(source.picked.map(x=>x.m),r.timeZone);
-  if(input.length>MAX_INPUT_CHARS)throw Error('원문 크기 초과: '+source.text+' 입력 '+input.length.toLocaleString('en-US')+'자 / 한도 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자. 범위를 더 작게 나눠 기록하세요.');
+  const label=spanLabel([[start,end]]);
+  // Over the input limit: split at message boundaries; each chunk becomes its own scene
+  // (one call each, in order). A message too large alone is left out with a note.
+  const split=splitForInput(source.picked,r.timeZone),note=splitNote(label,split,'기록');
+  if(!split.chunks.length)throw Error('원문 크기 초과: '+source.text+'의 메시지가 하나만으로도 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자 한도를 넘어 기록할 수 없습니다. 그 메시지는 잘라 보내지 않습니다.');
+  if(s.candidates.length+split.chunks.length>SCENE_MAX_CANDIDATES)throw Error('이 구간은 장면 '+split.chunks.length+'개로 나뉘는데 검토 대기 장면 자리가 모자랍니다('+SCENE_MAX_CANDIDATES+'개까지). 먼저 승인하거나 버리세요.');
   const msgs=await digests(all),evaluation=sceneEvaluate(s,msgs),frontier=sceneFrontier(s,evaluation);
-  const ids=source.picked.map(x=>x.m.id),fps=source.picked.map(x=>msgs[x.index].digest);
+  const ids=source.picked.map(x=>x.m.id);
   // Checked before paying for a call: a range may only repeat one active scene exactly
   // (re-record) and must not overlap any other active record.
   const hit=frontier.filter(x=>x.range.ids.some(id=>ids.includes(id)));
   const same=hit.length===1&&hit[0].kind==='scene'&&JSON.stringify(hit[0].range.ids)===JSON.stringify(ids)?hit[0]:null;
   if(hit.length&&!same)throw Error(sceneLabel(hit[0])+'과 범위가 겹칩니다. 겹치지 않게 고르거나, 같은 장면을 다시 기록하려면 시작·끝을 그 장면과 똑같이 맞추세요.'+(hit[0].kind==='chapter'?' 장은 합치기 취소 뒤 다시 기록할 수 있습니다.':''));
-  // Reference only: the closest earlier active record that is not secret.
+  if(same&&(split.chunks.length>1||split.skipped.length))throw Error(sceneLabel(same)+'은 지금 원문이 한도를 넘어 장면 하나로 다시 기록할 수 없습니다('+note+'). 이 장면을 지운 뒤 같은 구간을 기록하면 여러 장면으로 나눠 기록합니다.');
+  // Reference only: the closest earlier active record that is not secret; for a later
+  // chunk, the scene just written for the chunk before it.
   const firstIndex=source.picked[0].index;
-  const prev=frontier.filter(x=>x!==same&&['public','unknown'].includes(x.scope)&&evaluation.get(x.id)?.state==='approved'&&evaluation.get(x.id).loc.endIndex<firstIndex).at(-1);
-  const system=scenePrompt(SCENE_PROMPT,s.settings.maxBody);
-  const user_=(prev?'〈이전 기록〉\n'+prev.body+'\n〈/이전 기록〉\n\n':'')+'〈원문〉\n'+input+'\n〈/원문〉';
-  gate('generation');
-  const generated=await api.generate[r.mode]({messages:[{role:'system',content:system},{role:'user',content:user_}],connection_id:r.connection,userId:user,...target});
-  const stamp=sentStamp(source.picked.at(-1).m,r.timeZone),parsed=sceneParse(generated?.content,stamp?'기록 '+stamp:'시각 미상');
-  const label=spanLabel([[start,end]]);
-  s.candidates.push({id:crypto.randomUUID(),kind:'scene',title:parsed.title,body:parsed.body,keywords:parsed.keywords,scope:'unknown',status:'candidate',revision:1,range:{ids,fps,start,end},parentId:'',...(same?{replaces:same.id}:{}),
-   generation:{promptVersion:SCENE_PROMPT_VERSION,model:String(target.model||''),connection:r.connection,inputHash:await fingerprint(system+'\n'+user_),at:Date.now()},at:Date.now()});
+  let prev=frontier.filter(x=>x!==same&&['public','unknown'].includes(x.scope)&&evaluation.get(x.id)?.state==='approved'&&evaluation.get(x.id).loc.endIndex<firstIndex).at(-1)?.body||'';
+  const system=scenePrompt(SCENE_PROMPT,s.settings.maxBody),made=[],proposals=[],failed=[];
+  for(const chunk of split.chunks){
+   const [a,b]=chunkSpan(chunk),part=spanLabel([[a,b]]),input=sourceInput(chunk.map(x=>x.m),r.timeZone);
+   const user_=(prev?'〈이전 기록〉\n'+prev+'\n〈/이전 기록〉\n\n':'')+'〈원문〉\n'+input+'\n〈/원문〉';
+   try{
+    gate('generation');
+    const generated=await api.generate[r.mode]({messages:[{role:'system',content:system},{role:'user',content:user_}],connection_id:r.connection,userId:user,...target});
+    const stamp=sentStamp(chunk.at(-1).m,r.timeZone),parsed=sceneParse(generated?.content,stamp?'기록 '+stamp:'시각 미상');
+    s.candidates.push({id:crypto.randomUUID(),kind:'scene',title:parsed.title,body:parsed.body,keywords:parsed.keywords,scope:'unknown',status:'candidate',revision:1,range:{ids:chunk.map(x=>x.m.id),fps:chunk.map(x=>msgs[x.index].digest),start:a,end:b},parentId:'',...(same?{replaces:same.id}:{}),
+     generation:{promptVersion:SCENE_PROMPT_VERSION,model:String(target.model||''),connection:r.connection,inputHash:await fingerprint(system+'\n'+user_),at:Date.now()},at:Date.now()});
+    made.push(part);prev=parsed.body;
+    const evidence=chunk.map(({m,index})=>({id:m.id,index,fingerprint:msgs[index].digest}));
+    for(const [layer,list] of [['promises',parsed.promises],['flows',parsed.flows]])for(const text of list)proposals.push({layer,text,evidence,source:SCENE_SOURCE_LABEL+' · '+part});
+   }catch(error){if(split.chunks.length===1)throw error;failed.push(part+' 실패: '+error.message);}
+  }
+  if(!made.length)throw Error(note+' · 모든 조각 실패: '+failed.join(' / '));
   s=await save(chatId,user,s);
   const ev2=sceneEvaluate(s,msgs),p2=scenePlan(s,ev2);
-  const proposals=[...parsed.promises.map(text=>({layer:'promises',text})),...parsed.flows.map(text=>({layer:'flows',text}))];
-  const evidence=source.picked.map(({m,index})=>({id:m.id,index,fingerprint:msgs[index].digest}));
-  return {chronicle:view(s,ev2,p2,{total:all.length,chat}),proposals,evidence,source:SCENE_SOURCE_LABEL+' · '+label,
-   notice:label+' 장면 기록 · 검토 대기에 장면 후보 1개'+(same?'(다시 기록)':'')+(proposals.length?' · 약속·진행 흐름 후보 '+proposals.length+'개는 기억 검토 대기에':'')+' · 승인하면 로어북에 씁니다'};
+  return {chronicle:view(s,ev2,p2,{total:all.length,chat}),proposals,
+   notice:label+' 장면 기록 · 검토 대기에 장면 후보 '+made.length+'개'+(same?'(다시 기록)':'')+(note?' · '+note+'(장면 '+made.length+'개)':'')+(failed.length?' · '+failed.join(' / '):'')+(proposals.length?' · 약속·진행 흐름 후보 '+proposals.length+'개는 기억 검토 대기에':'')+' · 승인하면 로어북에 씁니다'};
  }
  async function merge(r,s,ctx,msgs){
   gate('generation');needModel(r);
@@ -1206,7 +1251,7 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
   const task=prior.catch(()=>{}).then(async()=>{
    gate('chats');const chat=await api.chats.get(chatId,user);if(!chat)throw Error('채팅 소유권 확인 실패');
    const path='chats/'+chatId+'/data.json';
-   if(r.type==='autoPrepare')return autoPrepare(chatId,user,chat,key);
+   if(r.type==='autoPrepare')return autoPrepare(chatId,user,chat,key,typeof internal==='object'?internal:{});
    // A receipt whose call never happened, closed through auto.json when it could not
    // be marked unsent itself (inside the queue, so it never races a settings save).
    if(r.type==='autoUnsent'){const a=await readAuto(chatId,user);await settleAttempt(chatId,user,a,internal);return {skip:'unsent'};}
@@ -1305,24 +1350,37 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
     const target=r.mode==='raw'?await rawTarget(r.connection,user):{};
     const all=await api.chat.getMessages(chatId),source=selectSource(all,r.source),messages=source.picked.map(x=>x.m);
     if(source.spans.length>1)throw Error('범위 여러 개를 한 번에 분석하지 않습니다. 범위마다 따로 분석하세요.');
-    const input=sourceInput(messages,r.timeZone);if(input.length>MAX_INPUT_CHARS)throw Error('원문 크기 초과: '+source.text+' 입력 '+input.length.toLocaleString('en-US')+'자 / 한도 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자. '+(r.source?.scope==='range'?'이 범위를 더 작은 범위 여러 개로 나눠서 분석하세요.':'개수를 줄이거나 범위로 나눠서 분석하세요.'));
-    const evidence=await Promise.all(source.picked.map(async({m,index})=>({id:m.id,index,fingerprint:await fingerprint(m.content)})));
-    // The summary only takes the room the raw range leaves; it never causes a failure.
-    const loomOn=await readLoom(user),loom=loomOn?loomBlock(loomText(chat),MAX_INPUT_CHARS-input.length):{text:'',chars:0};
-    count={...countOf(all),analyzed:source.text,loomNote:loom.chars||loom.omitted?loomLabel(loomOn,loom):''};
-    gate('generation');const generated=await api.generate[r.mode]({messages:[{role:'system',content:withLoom(ANALYSIS_PROMPT,loom,LOOM_ANALYSIS_RULES)},{role:'user',content:input+loom.text}],connection_id:r.connection,userId:user,...target});
-    // Model scope claims are never trusted: every candidate starts as 'unknown'.
-    const normalized=normalizeCandidates(parseCandidates(generated?.content));
-    if(normalized.total&&!normalized.items.length){const raw=typeof generated?.content==='string'?generated.content.trim():JSON.stringify(generated?.content??'');
-     throw Error('모델 응답의 후보 '+normalized.total+'개가 모두 형식 오류입니다(첫 항목: '+normalized.skipped[0].reason+'). 다시 시도하거나 다른 모델·모드를 선택하세요. 응답 앞부분: '+(raw.slice(0,120)||'(빈 응답)')+(raw.length>120?'…':''));}
-    notice=skippedNotice(normalized);count.added=normalized.items.length;
-    next=apply(state,{type:'propose',items:normalized.items.map(x=>({...x,id:crypto.randomUUID(),scope:'unknown',evidence,source:'선택 원문 모델 후보 · '+source.text}))});
+    // Over the input limit: split at message boundaries into consecutive chunks, one
+    // model call each, in order. A single message that cannot fit alone is skipped with
+    // a note (never cut). Chunks that fail are reported; the others are kept.
+    const split=splitForInput(source.picked,r.timeZone),note=splitNote(source.text.replace(/ \(.*$/,''),split);
+    if(!split.chunks.length)throw Error('원문 크기 초과: '+source.text+'의 메시지가 하나만으로도 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자 한도를 넘어 분석할 수 없습니다. 그 메시지는 잘라 보내지 않습니다.');
+    const loomOn=await readLoom(user),items=[],failed=[];let loomNote='';
+    for(const chunk of split.chunks){
+     const input=sourceInput(chunk.map(x=>x.m),r.timeZone),label=split.chunks.length>1?spanLabel([chunkSpan(chunk)])+' ('+chunk.length+'개)':source.text;
+     const evidence=await Promise.all(chunk.map(async({m,index})=>({id:m.id,index,fingerprint:await fingerprint(m.content)})));
+     // The summary only takes the room the raw chunk leaves; it never causes a failure.
+     const loom=loomOn?loomBlock(loomText(chat),MAX_INPUT_CHARS-input.length):{text:'',chars:0};if(loom.chars||loom.omitted)loomNote=loomLabel(loomOn,loom);
+     try{
+      gate('generation');const generated=await api.generate[r.mode]({messages:[{role:'system',content:withLoom(ANALYSIS_PROMPT,loom,LOOM_ANALYSIS_RULES)},{role:'user',content:input+loom.text}],connection_id:r.connection,userId:user,...target});
+      // Model scope claims are never trusted: every candidate starts as 'unknown'.
+      const normalized=normalizeCandidates(parseCandidates(generated?.content));
+      if(normalized.total&&!normalized.items.length){const raw=typeof generated?.content==='string'?generated.content.trim():JSON.stringify(generated?.content??'');
+       throw Error('모델 응답의 후보 '+normalized.total+'개가 모두 형식 오류입니다(첫 항목: '+normalized.skipped[0].reason+'). 다시 시도하거나 다른 모델·모드를 선택하세요. 응답 앞부분: '+(raw.slice(0,120)||'(빈 응답)')+(raw.length>120?'…':''));}
+      const skipped=skippedNotice(normalized);if(skipped)failed.push((split.chunks.length>1?label+': ':'')+skipped);
+      items.push(...normalized.items.map(x=>({...x,id:crypto.randomUUID(),scope:'unknown',evidence,source:'선택 원문 모델 후보 · '+label})));
+     }catch(error){if(split.chunks.length===1)throw error;failed.push(label+' 실패: '+error.message);}
+    }
+    if(split.chunks.length>1&&failed.length===split.chunks.length&&!items.length&&failed.every(x=>x.includes(' 실패: ')))throw Error(note+' · 모든 조각 실패: '+failed.join(' / '));
+    count={...countOf(all),analyzed:source.text,loomNote,added:items.length,...(note?{split:note}:{})};
+    notice=[note,...failed].filter(Boolean).join(' · ');
+    next=apply(state,{type:'propose',items});
    }else if(r.type==='sceneRecord'){
     // One range, one model call: the scene candidate is stored in chronicle.json; promise
     // and flow lines from the same response join the review queue (scope unknown).
     scene=await chronicle.record(r,{chatId,user,chat});
     if(!scene.proposals.length)return {...response(),chronicle:scene.chronicle,notice:scene.notice};
-    next=apply(state,{type:'propose',items:scene.proposals.map(x=>({...x,id:crypto.randomUUID(),scope:'unknown',evidence:scene.evidence,source:scene.source}))});
+    next=apply(state,{type:'propose',items:scene.proposals.map(x=>({...x,id:crypto.randomUUID(),scope:'unknown'}))});
    }else if(r.type==='healthApply'){
     // Only proposals stored by the check are applied; the panel sends their IDs.
     const h=await readHealth(chatId,user);if(!h)throw Error('기억 점검 결과가 없습니다. 다시 점검하세요.');
@@ -1424,7 +1482,9 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
  }
  // Runs inside the chat queue after the ownership check: decides whether N user
  // messages have accumulated and snapshots exactly the messages since the marker.
- async function autoPrepare(chatId,user,chat,key){
+ // `cont`: a later chunk of the same run (no count/backoff check), bounded by `until`,
+ // the last message of the span the run started with.
+ async function autoPrepare(chatId,user,chat,key,{cont=false,until=null}={}){
   const a=await readAuto(chatId,user);if(!a.enabled)return {skip:'off'};
   if(gens.has(key)&&gens.get(key)!==a.gen)return {skip:'stale'};
   // A paused run: store its outcome first (no model call this time). Until that works
@@ -1435,7 +1495,7 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
    else{try{await writeAuto(chatId,user,{...a,...(hold.marker?{marker:hold.marker}:{}),failed:hold.failed,last:hold.saved,...(hold.attempt?{lastAttempt:hold.attempt}:{})});paused.delete(key);return {skip:'resumed'};}catch{return {skip:'paused'};}}
   }
   gate('generation');gate('chat_mutation');
-  const all=await api.chat.getMessages(chatId),end=markerAt(all,all.length-1);
+  const all=await api.chat.getMessages(chatId);
   // The stored position, moved forward (never back) past spans whose automatic candidates
   // are already in data.json: a lost position write can never re-send a saved span.
   const done=await autoDone(chatId,user,all),from=Math.max(markerIndex(all,a.marker),done);
@@ -1444,62 +1504,87 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
   // saves the settings again (restart-safe; the in-memory pause above covers this worker).
   if(attemptOpen(a,await readAttempt(chatId,user),all,done))return {skip:'uncertain'};
   const users=userTurnsAfter(all,from);
-  if(users<a.every)return {skip:'count',users};
-  if(a.failed&&userTurnsAfter(all,markerIndex(all,a.failed))<a.every)return {skip:'backoff',users};
-  const picked=all.map((m,index)=>({m,index})).filter(({index})=>index>from);
-  // Over the input limit: the oldest messages are dropped and the marker still moves
-  // to the end, so the gap is reported once instead of blocking every later run.
-  let input=sourceInput(picked.map(x=>x.m),a.timeZone),dropped=0;
-  while(input.length>MAX_INPUT_CHARS&&picked.length>1){picked.shift();dropped++;input=sourceInput(picked.map(x=>x.m),a.timeZone);}
-  const text='대화 '+(picked[0].index+1)+'–'+(picked.at(-1).index+1)+' ('+picked.length+'개)'+(dropped?' · 앞 '+dropped+'개는 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자 한도를 넘어 생략':'');
-  if(input.length>MAX_INPUT_CHARS)return {fail:'원문 크기 초과: 메시지 하나가 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자 한도를 넘어 이번 구간을 건너뜁니다.',end,text,gen:a.gen};
+  if(!cont){
+   if(users<a.every)return {skip:'count',users};
+   if(a.failed&&userTurnsAfter(all,markerIndex(all,a.failed))<a.every)return {skip:'backoff',users};
+  }
+  const last=until?Math.min(markerIndex(all,until),all.length-1):all.length-1,stop=markerAt(all,last);
+  const pending=all.map((m,index)=>({m,index})).filter(({index})=>index>from&&index<=last);
+  if(!pending.length)return {skip:'count',users};
+  // Over the input limit: the span is analyzed in consecutive chunks, oldest first, one
+  // call (and one attempt receipt and marker write) per chunk. A message that cannot fit
+  // alone is skipped with a note and the marker moves past it (never cut, never retried).
+  const split=splitForInput(pending,a.timeZone),first=split.chunks[0];
+  if(!first||split.skipped[0]&&split.skipped[0].index<first[0].index){const big=split.skipped[0];
+   return {fail:'원문 크기 초과: 대화 '+(big.index+1)+' 메시지 하나가 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자 한도를 넘어 건너뜁니다(잘라 보내지 않음).',end:markerAt(all,big.index),text:'대화 '+(big.index+1)+' (1개)',gen:a.gen,more:big.index<last,until:stop};}
+  const picked=first,input=sourceInput(picked.map(x=>x.m),a.timeZone),more=picked.at(-1).index<last;
+  const text='대화 '+(picked[0].index+1)+'–'+(picked.at(-1).index+1)+' ('+picked.length+'개)'+(more||cont?' · 대화 '+(cont?'':(pending[0].index+1)+'–')+(last+1)+'까지 나눠 분석 중':'');
+  const end=markerAt(all,picked.at(-1).index);
   const evidence=await Promise.all(picked.map(async({m,index})=>({id:m.id,index,fingerprint:await fingerprint(m.content)})));
   // Raw messages first; the summary only takes the room they leave (in memory only).
   const loomOn=await readLoom(user),loom=loomOn?loomBlock(loomText(chat),MAX_INPUT_CHARS-input.length):{text:'',chars:0};
-  return {prepared:{gen:a.gen,mode:a.mode,connection:a.connection,input:input+loom.text,system:withLoom(ANALYSIS_PROMPT,loom,LOOM_ANALYSIS_RULES),evidence,text,loomNote:loom.chars||loom.omitted?loomLabel(loomOn,loom):'',end,users}};
+  return {prepared:{gen:a.gen,mode:a.mode,connection:a.connection,input:input+loom.text,system:withLoom(ANALYSIS_PROMPT,loom,LOOM_ANALYSIS_RULES),evidence,text,loomNote:loom.chars||loom.omitted?loomLabel(loomOn,loom):'',end,users},more,until:stop};
  }
  const notify=(user,chatId,auto)=>{try{api.sendToFrontend?.({event:'autoAnalysis',chatId,auto},user);}catch{}};
  // One automatic run per user/chat at a time; the model call happens outside the chat
  // queue so the interceptor (and so the next RP reply) never waits for it.
+ // One chunk: receipt, model call, outcome. Returns the per-chunk result.
+ async function autoStep(chatId,user,key,x){
+  try{
+   gate('generation');const target=x.mode==='raw'?await rawTarget(x.connection,user):{};
+   // Right before submitting: the settings this job was prepared under must still be
+   // current (on, same generation, same mode and connection). Turned off or changed
+   // while the connection lookup was pending means nothing is sent.
+   const current=async()=>{const now=await readAuto(chatId,user);return !now.enabled||stale(key,now,x)||now.mode!==x.mode||now.connection!==x.connection||paused.has(key)?{skip:now.enabled?'stale':'off'}:null;};
+   let changed=await current();if(changed)return changed;
+   // Receipt right before sending: if it cannot be stored, nothing is sent.
+   x.attempt=crypto.randomUUID();attempting.set(key,x.attempt);
+   const receipt={id:x.attempt,gen:x.gen,end:x.end,at:Date.now()};
+   try{await api.userStorage.setJson(attemptPath(chatId),safe(receipt),{userId:user});}catch{return {skip:'attempt',error:'자동 분석 시도 기록을 저장하지 못해 이번에는 보내지 않았습니다.'};}
+   // Writing the receipt is a wait of its own: settings turned off (or off and on)
+   // meanwhile mean nothing is sent. The receipt is closed as never sent so the chat
+   // is not paused on it.
+   changed=await current();
+   if(changed){
+    try{await api.userStorage.setJson(attemptPath(chatId),safe({...receipt,sent:false}),{userId:user});}
+    catch{try{await run({type:'autoUnsent',chatId},user,{attempt:x.attempt});}catch{}}
+    return changed;
+   }
+   gate('generation');const generated=await api.generate[x.mode]({messages:[{role:'system',content:x.system},{role:'user',content:x.input}],connection_id:x.connection,userId:user,...target});
+   const normalized=normalizeCandidates(parseCandidates(generated?.content));
+   if(normalized.total&&!normalized.items.length)throw Error('모델 응답의 후보 '+normalized.total+'개가 모두 형식 오류입니다(첫 항목: '+normalized.skipped[0].reason+').');
+   const out=await run({type:'autoPropose',chatId},user,{...x,items:normalized.items,notice:skippedNotice(normalized)});
+   if(out.auto)notify(user,chatId,out.auto);
+   // Saved candidates whose position could not be stored are not reported as success.
+   return out.skip?out:out.paused?{paused:true,added:normalized.items.length,error:AUTO_PAUSED}:{ok:true,added:normalized.items.length};
+  }catch(error){
+   try{const f=await run({type:'autoFail',chatId},user,{error:error.message,end:x.end,text:x.text,gen:x.gen,attempt:x.attempt});if(f.auto)notify(user,chatId,f.auto);}catch{}
+   return {error:error.message};
+  }
+ }
+ // The span since the last automatic analysis is sent in chunks that fit the input
+ // limit, one after another; each chunk stores its own receipt and position, so a stop
+ // at any point (failure, pause, settings change) resumes after the last stored chunk.
+ const AUTO_MAX_CHUNKS=50;
  async function autoCheck(chatId,user){
   if(!validUser(user)||!validId(chatId))return {skip:'invalid'};
   const key=user+':'+chatId;if(inflight.has(key))return {skip:'busy'};inflight.add(key);
   try{
-   let p;try{p=await run({type:'autoPrepare',chatId},user,true);}catch(error){return {skip:'error',error:error.message};}
-   if(p.fail){const f=await run({type:'autoFail',chatId},user,{error:p.fail,end:p.end,text:p.text,advance:true,gen:p.gen});if(f.auto)notify(user,chatId,f.auto);return {error:p.fail,...(f.paused?{paused:true}:{})};}
-   if(!p.prepared)return p;
-   const x=p.prepared;
-   try{
-    gate('generation');const target=x.mode==='raw'?await rawTarget(x.connection,user):{};
-    // Right before submitting: the settings this job was prepared under must still be
-    // current (on, same generation, same mode and connection). Turned off or changed
-    // while the connection lookup was pending means nothing is sent.
-    const current=async()=>{const now=await readAuto(chatId,user);return !now.enabled||stale(key,now,x)||now.mode!==x.mode||now.connection!==x.connection||paused.has(key)?{skip:now.enabled?'stale':'off'}:null;};
-    let changed=await current();if(changed)return changed;
-    // Receipt right before sending: if it cannot be stored, nothing is sent.
-    x.attempt=crypto.randomUUID();attempting.set(key,x.attempt);
-    const receipt={id:x.attempt,gen:x.gen,end:x.end,at:Date.now()};
-    try{await api.userStorage.setJson(attemptPath(chatId),safe(receipt),{userId:user});}catch{return {skip:'attempt',error:'자동 분석 시도 기록을 저장하지 못해 이번에는 보내지 않았습니다.'};}
-    // Writing the receipt is a wait of its own: settings turned off (or off and on)
-    // meanwhile mean nothing is sent. The receipt is closed as never sent so the chat
-    // is not paused on it.
-    changed=await current();
-    if(changed){
-     try{await api.userStorage.setJson(attemptPath(chatId),safe({...receipt,sent:false}),{userId:user});}
-     catch{try{await run({type:'autoUnsent',chatId},user,{attempt:x.attempt});}catch{}}
-     return changed;
-    }
-    gate('generation');const generated=await api.generate[x.mode]({messages:[{role:'system',content:x.system},{role:'user',content:x.input}],connection_id:x.connection,userId:user,...target});
-    const normalized=normalizeCandidates(parseCandidates(generated?.content));
-    if(normalized.total&&!normalized.items.length)throw Error('모델 응답의 후보 '+normalized.total+'개가 모두 형식 오류입니다(첫 항목: '+normalized.skipped[0].reason+').');
-    const out=await run({type:'autoPropose',chatId},user,{...x,items:normalized.items,notice:skippedNotice(normalized)});
-    if(out.auto)notify(user,chatId,out.auto);
-    // Saved candidates whose position could not be stored are not reported as success.
-    return out.skip?out:out.paused?{paused:true,added:normalized.items.length,error:AUTO_PAUSED}:{ok:true,added:normalized.items.length};
-   }catch(error){
-    try{const f=await run({type:'autoFail',chatId},user,{error:error.message,end:x.end,text:x.text,gen:x.gen,attempt:x.attempt});if(f.auto)notify(user,chatId,f.auto);}catch{}
-    return {error:error.message};
+   const results=[];let until=null;
+   for(let i=0;i<AUTO_MAX_CHUNKS;i++){
+    let p;try{p=await run({type:'autoPrepare',chatId},user,{cont:i>0,until});}catch(error){if(!i)return {skip:'error',error:error.message};break;}
+    if(!i)until=p.until||null;
+    let r;
+    if(p.fail){const f=await run({type:'autoFail',chatId},user,{error:p.fail,end:p.end,text:p.text,advance:true,gen:p.gen});if(f.auto)notify(user,chatId,f.auto);r={error:p.fail,skippedMessage:true,...(f.paused?{paused:true}:{})};}
+    else if(!p.prepared){if(!i)return p;break;}
+    else r=await autoStep(chatId,user,key,p.prepared);
+    results.push(r);
+    // Continue only after a stored chunk or a skipped oversized message.
+    if(!p.more||r.paused||r.skip||(r.error&&!r.skippedMessage))break;
    }
+   if(results.length===1){const {skippedMessage,...r}=results[0];return r;}
+   const added=results.reduce((n,r)=>n+(r.added||0),0),errors=results.filter(r=>r.error).map(r=>r.error),last=results.at(-1);
+   return {...(errors.length?{error:errors.join(' / ')}:{ok:true}),added,chunks:results.length,...(last.paused?{paused:true}:{}),...(last.skip?{skip:last.skip}:{})};
   }finally{inflight.delete(key);attempting.delete(key);}
  }
  // Host GENERATION_ENDED (payload, userId). Only finished replies count; failed,

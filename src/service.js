@@ -1,4 +1,4 @@
-import {empty,apply,clone,safe,strictInt,parseCandidates,normalizeCandidates,skippedNotice,validate,inherit,review,fingerprint,publicItems,injectionText,MAX_INPUT_CHARS,sourceInput,selectSource,countOf,validTimeZone,PROPOSAL_KEYS,normalizeProposals,healthEligible,healthBase,healthPlan,layerNames,lifecycleLayers,loomText,loomBlock,loomLabel} from './core.js';
+import {empty,apply,clone,safe,strictInt,parseCandidates,normalizeCandidates,skippedNotice,validate,inherit,review,fingerprint,publicItems,injectionText,MAX_INPUT_CHARS,sourceInput,selectSource,countOf,validTimeZone,PROPOSAL_KEYS,normalizeProposals,healthEligible,healthBase,healthPlan,layerNames,lifecycleLayers,loomText,loomBlock,loomLabel,splitForInput,splitNote,chunkSpan,spanLabel} from './core.js';
 import {createChronicle,SCENE_TYPES} from './chronicle-service.js';
 const validId=x=>typeof x==='string'&&/^[a-zA-Z0-9_-]{1,120}$/.test(x);
 // Lumiverse user IDs are URL-safe and up to 128 characters (host auth provisioning).
@@ -166,7 +166,7 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
   const task=prior.catch(()=>{}).then(async()=>{
    gate('chats');const chat=await api.chats.get(chatId,user);if(!chat)throw Error('채팅 소유권 확인 실패');
    const path='chats/'+chatId+'/data.json';
-   if(r.type==='autoPrepare')return autoPrepare(chatId,user,chat,key);
+   if(r.type==='autoPrepare')return autoPrepare(chatId,user,chat,key,typeof internal==='object'?internal:{});
    // A receipt whose call never happened, closed through auto.json when it could not
    // be marked unsent itself (inside the queue, so it never races a settings save).
    if(r.type==='autoUnsent'){const a=await readAuto(chatId,user);await settleAttempt(chatId,user,a,internal);return {skip:'unsent'};}
@@ -265,24 +265,37 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
     const target=r.mode==='raw'?await rawTarget(r.connection,user):{};
     const all=await api.chat.getMessages(chatId),source=selectSource(all,r.source),messages=source.picked.map(x=>x.m);
     if(source.spans.length>1)throw Error('범위 여러 개를 한 번에 분석하지 않습니다. 범위마다 따로 분석하세요.');
-    const input=sourceInput(messages,r.timeZone);if(input.length>MAX_INPUT_CHARS)throw Error('원문 크기 초과: '+source.text+' 입력 '+input.length.toLocaleString('en-US')+'자 / 한도 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자. '+(r.source?.scope==='range'?'이 범위를 더 작은 범위 여러 개로 나눠서 분석하세요.':'개수를 줄이거나 범위로 나눠서 분석하세요.'));
-    const evidence=await Promise.all(source.picked.map(async({m,index})=>({id:m.id,index,fingerprint:await fingerprint(m.content)})));
-    // The summary only takes the room the raw range leaves; it never causes a failure.
-    const loomOn=await readLoom(user),loom=loomOn?loomBlock(loomText(chat),MAX_INPUT_CHARS-input.length):{text:'',chars:0};
-    count={...countOf(all),analyzed:source.text,loomNote:loom.chars||loom.omitted?loomLabel(loomOn,loom):''};
-    gate('generation');const generated=await api.generate[r.mode]({messages:[{role:'system',content:withLoom(ANALYSIS_PROMPT,loom,LOOM_ANALYSIS_RULES)},{role:'user',content:input+loom.text}],connection_id:r.connection,userId:user,...target});
-    // Model scope claims are never trusted: every candidate starts as 'unknown'.
-    const normalized=normalizeCandidates(parseCandidates(generated?.content));
-    if(normalized.total&&!normalized.items.length){const raw=typeof generated?.content==='string'?generated.content.trim():JSON.stringify(generated?.content??'');
-     throw Error('모델 응답의 후보 '+normalized.total+'개가 모두 형식 오류입니다(첫 항목: '+normalized.skipped[0].reason+'). 다시 시도하거나 다른 모델·모드를 선택하세요. 응답 앞부분: '+(raw.slice(0,120)||'(빈 응답)')+(raw.length>120?'…':''));}
-    notice=skippedNotice(normalized);count.added=normalized.items.length;
-    next=apply(state,{type:'propose',items:normalized.items.map(x=>({...x,id:crypto.randomUUID(),scope:'unknown',evidence,source:'선택 원문 모델 후보 · '+source.text}))});
+    // Over the input limit: split at message boundaries into consecutive chunks, one
+    // model call each, in order. A single message that cannot fit alone is skipped with
+    // a note (never cut). Chunks that fail are reported; the others are kept.
+    const split=splitForInput(source.picked,r.timeZone),note=splitNote(source.text.replace(/ \(.*$/,''),split);
+    if(!split.chunks.length)throw Error('원문 크기 초과: '+source.text+'의 메시지가 하나만으로도 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자 한도를 넘어 분석할 수 없습니다. 그 메시지는 잘라 보내지 않습니다.');
+    const loomOn=await readLoom(user),items=[],failed=[];let loomNote='';
+    for(const chunk of split.chunks){
+     const input=sourceInput(chunk.map(x=>x.m),r.timeZone),label=split.chunks.length>1?spanLabel([chunkSpan(chunk)])+' ('+chunk.length+'개)':source.text;
+     const evidence=await Promise.all(chunk.map(async({m,index})=>({id:m.id,index,fingerprint:await fingerprint(m.content)})));
+     // The summary only takes the room the raw chunk leaves; it never causes a failure.
+     const loom=loomOn?loomBlock(loomText(chat),MAX_INPUT_CHARS-input.length):{text:'',chars:0};if(loom.chars||loom.omitted)loomNote=loomLabel(loomOn,loom);
+     try{
+      gate('generation');const generated=await api.generate[r.mode]({messages:[{role:'system',content:withLoom(ANALYSIS_PROMPT,loom,LOOM_ANALYSIS_RULES)},{role:'user',content:input+loom.text}],connection_id:r.connection,userId:user,...target});
+      // Model scope claims are never trusted: every candidate starts as 'unknown'.
+      const normalized=normalizeCandidates(parseCandidates(generated?.content));
+      if(normalized.total&&!normalized.items.length){const raw=typeof generated?.content==='string'?generated.content.trim():JSON.stringify(generated?.content??'');
+       throw Error('모델 응답의 후보 '+normalized.total+'개가 모두 형식 오류입니다(첫 항목: '+normalized.skipped[0].reason+'). 다시 시도하거나 다른 모델·모드를 선택하세요. 응답 앞부분: '+(raw.slice(0,120)||'(빈 응답)')+(raw.length>120?'…':''));}
+      const skipped=skippedNotice(normalized);if(skipped)failed.push((split.chunks.length>1?label+': ':'')+skipped);
+      items.push(...normalized.items.map(x=>({...x,id:crypto.randomUUID(),scope:'unknown',evidence,source:'선택 원문 모델 후보 · '+label})));
+     }catch(error){if(split.chunks.length===1)throw error;failed.push(label+' 실패: '+error.message);}
+    }
+    if(split.chunks.length>1&&failed.length===split.chunks.length&&!items.length&&failed.every(x=>x.includes(' 실패: ')))throw Error(note+' · 모든 조각 실패: '+failed.join(' / '));
+    count={...countOf(all),analyzed:source.text,loomNote,added:items.length,...(note?{split:note}:{})};
+    notice=[note,...failed].filter(Boolean).join(' · ');
+    next=apply(state,{type:'propose',items});
    }else if(r.type==='sceneRecord'){
     // One range, one model call: the scene candidate is stored in chronicle.json; promise
     // and flow lines from the same response join the review queue (scope unknown).
     scene=await chronicle.record(r,{chatId,user,chat});
     if(!scene.proposals.length)return {...response(),chronicle:scene.chronicle,notice:scene.notice};
-    next=apply(state,{type:'propose',items:scene.proposals.map(x=>({...x,id:crypto.randomUUID(),scope:'unknown',evidence:scene.evidence,source:scene.source}))});
+    next=apply(state,{type:'propose',items:scene.proposals.map(x=>({...x,id:crypto.randomUUID(),scope:'unknown'}))});
    }else if(r.type==='healthApply'){
     // Only proposals stored by the check are applied; the panel sends their IDs.
     const h=await readHealth(chatId,user);if(!h)throw Error('기억 점검 결과가 없습니다. 다시 점검하세요.');
@@ -384,7 +397,9 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
  }
  // Runs inside the chat queue after the ownership check: decides whether N user
  // messages have accumulated and snapshots exactly the messages since the marker.
- async function autoPrepare(chatId,user,chat,key){
+ // `cont`: a later chunk of the same run (no count/backoff check), bounded by `until`,
+ // the last message of the span the run started with.
+ async function autoPrepare(chatId,user,chat,key,{cont=false,until=null}={}){
   const a=await readAuto(chatId,user);if(!a.enabled)return {skip:'off'};
   if(gens.has(key)&&gens.get(key)!==a.gen)return {skip:'stale'};
   // A paused run: store its outcome first (no model call this time). Until that works
@@ -395,7 +410,7 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
    else{try{await writeAuto(chatId,user,{...a,...(hold.marker?{marker:hold.marker}:{}),failed:hold.failed,last:hold.saved,...(hold.attempt?{lastAttempt:hold.attempt}:{})});paused.delete(key);return {skip:'resumed'};}catch{return {skip:'paused'};}}
   }
   gate('generation');gate('chat_mutation');
-  const all=await api.chat.getMessages(chatId),end=markerAt(all,all.length-1);
+  const all=await api.chat.getMessages(chatId);
   // The stored position, moved forward (never back) past spans whose automatic candidates
   // are already in data.json: a lost position write can never re-send a saved span.
   const done=await autoDone(chatId,user,all),from=Math.max(markerIndex(all,a.marker),done);
@@ -404,62 +419,87 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
   // saves the settings again (restart-safe; the in-memory pause above covers this worker).
   if(attemptOpen(a,await readAttempt(chatId,user),all,done))return {skip:'uncertain'};
   const users=userTurnsAfter(all,from);
-  if(users<a.every)return {skip:'count',users};
-  if(a.failed&&userTurnsAfter(all,markerIndex(all,a.failed))<a.every)return {skip:'backoff',users};
-  const picked=all.map((m,index)=>({m,index})).filter(({index})=>index>from);
-  // Over the input limit: the oldest messages are dropped and the marker still moves
-  // to the end, so the gap is reported once instead of blocking every later run.
-  let input=sourceInput(picked.map(x=>x.m),a.timeZone),dropped=0;
-  while(input.length>MAX_INPUT_CHARS&&picked.length>1){picked.shift();dropped++;input=sourceInput(picked.map(x=>x.m),a.timeZone);}
-  const text='대화 '+(picked[0].index+1)+'–'+(picked.at(-1).index+1)+' ('+picked.length+'개)'+(dropped?' · 앞 '+dropped+'개는 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자 한도를 넘어 생략':'');
-  if(input.length>MAX_INPUT_CHARS)return {fail:'원문 크기 초과: 메시지 하나가 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자 한도를 넘어 이번 구간을 건너뜁니다.',end,text,gen:a.gen};
+  if(!cont){
+   if(users<a.every)return {skip:'count',users};
+   if(a.failed&&userTurnsAfter(all,markerIndex(all,a.failed))<a.every)return {skip:'backoff',users};
+  }
+  const last=until?Math.min(markerIndex(all,until),all.length-1):all.length-1,stop=markerAt(all,last);
+  const pending=all.map((m,index)=>({m,index})).filter(({index})=>index>from&&index<=last);
+  if(!pending.length)return {skip:'count',users};
+  // Over the input limit: the span is analyzed in consecutive chunks, oldest first, one
+  // call (and one attempt receipt and marker write) per chunk. A message that cannot fit
+  // alone is skipped with a note and the marker moves past it (never cut, never retried).
+  const split=splitForInput(pending,a.timeZone),first=split.chunks[0];
+  if(!first||split.skipped[0]&&split.skipped[0].index<first[0].index){const big=split.skipped[0];
+   return {fail:'원문 크기 초과: 대화 '+(big.index+1)+' 메시지 하나가 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자 한도를 넘어 건너뜁니다(잘라 보내지 않음).',end:markerAt(all,big.index),text:'대화 '+(big.index+1)+' (1개)',gen:a.gen,more:big.index<last,until:stop};}
+  const picked=first,input=sourceInput(picked.map(x=>x.m),a.timeZone),more=picked.at(-1).index<last;
+  const text='대화 '+(picked[0].index+1)+'–'+(picked.at(-1).index+1)+' ('+picked.length+'개)'+(more||cont?' · 대화 '+(cont?'':(pending[0].index+1)+'–')+(last+1)+'까지 나눠 분석 중':'');
+  const end=markerAt(all,picked.at(-1).index);
   const evidence=await Promise.all(picked.map(async({m,index})=>({id:m.id,index,fingerprint:await fingerprint(m.content)})));
   // Raw messages first; the summary only takes the room they leave (in memory only).
   const loomOn=await readLoom(user),loom=loomOn?loomBlock(loomText(chat),MAX_INPUT_CHARS-input.length):{text:'',chars:0};
-  return {prepared:{gen:a.gen,mode:a.mode,connection:a.connection,input:input+loom.text,system:withLoom(ANALYSIS_PROMPT,loom,LOOM_ANALYSIS_RULES),evidence,text,loomNote:loom.chars||loom.omitted?loomLabel(loomOn,loom):'',end,users}};
+  return {prepared:{gen:a.gen,mode:a.mode,connection:a.connection,input:input+loom.text,system:withLoom(ANALYSIS_PROMPT,loom,LOOM_ANALYSIS_RULES),evidence,text,loomNote:loom.chars||loom.omitted?loomLabel(loomOn,loom):'',end,users},more,until:stop};
  }
  const notify=(user,chatId,auto)=>{try{api.sendToFrontend?.({event:'autoAnalysis',chatId,auto},user);}catch{}};
  // One automatic run per user/chat at a time; the model call happens outside the chat
  // queue so the interceptor (and so the next RP reply) never waits for it.
+ // One chunk: receipt, model call, outcome. Returns the per-chunk result.
+ async function autoStep(chatId,user,key,x){
+  try{
+   gate('generation');const target=x.mode==='raw'?await rawTarget(x.connection,user):{};
+   // Right before submitting: the settings this job was prepared under must still be
+   // current (on, same generation, same mode and connection). Turned off or changed
+   // while the connection lookup was pending means nothing is sent.
+   const current=async()=>{const now=await readAuto(chatId,user);return !now.enabled||stale(key,now,x)||now.mode!==x.mode||now.connection!==x.connection||paused.has(key)?{skip:now.enabled?'stale':'off'}:null;};
+   let changed=await current();if(changed)return changed;
+   // Receipt right before sending: if it cannot be stored, nothing is sent.
+   x.attempt=crypto.randomUUID();attempting.set(key,x.attempt);
+   const receipt={id:x.attempt,gen:x.gen,end:x.end,at:Date.now()};
+   try{await api.userStorage.setJson(attemptPath(chatId),safe(receipt),{userId:user});}catch{return {skip:'attempt',error:'자동 분석 시도 기록을 저장하지 못해 이번에는 보내지 않았습니다.'};}
+   // Writing the receipt is a wait of its own: settings turned off (or off and on)
+   // meanwhile mean nothing is sent. The receipt is closed as never sent so the chat
+   // is not paused on it.
+   changed=await current();
+   if(changed){
+    try{await api.userStorage.setJson(attemptPath(chatId),safe({...receipt,sent:false}),{userId:user});}
+    catch{try{await run({type:'autoUnsent',chatId},user,{attempt:x.attempt});}catch{}}
+    return changed;
+   }
+   gate('generation');const generated=await api.generate[x.mode]({messages:[{role:'system',content:x.system},{role:'user',content:x.input}],connection_id:x.connection,userId:user,...target});
+   const normalized=normalizeCandidates(parseCandidates(generated?.content));
+   if(normalized.total&&!normalized.items.length)throw Error('모델 응답의 후보 '+normalized.total+'개가 모두 형식 오류입니다(첫 항목: '+normalized.skipped[0].reason+').');
+   const out=await run({type:'autoPropose',chatId},user,{...x,items:normalized.items,notice:skippedNotice(normalized)});
+   if(out.auto)notify(user,chatId,out.auto);
+   // Saved candidates whose position could not be stored are not reported as success.
+   return out.skip?out:out.paused?{paused:true,added:normalized.items.length,error:AUTO_PAUSED}:{ok:true,added:normalized.items.length};
+  }catch(error){
+   try{const f=await run({type:'autoFail',chatId},user,{error:error.message,end:x.end,text:x.text,gen:x.gen,attempt:x.attempt});if(f.auto)notify(user,chatId,f.auto);}catch{}
+   return {error:error.message};
+  }
+ }
+ // The span since the last automatic analysis is sent in chunks that fit the input
+ // limit, one after another; each chunk stores its own receipt and position, so a stop
+ // at any point (failure, pause, settings change) resumes after the last stored chunk.
+ const AUTO_MAX_CHUNKS=50;
  async function autoCheck(chatId,user){
   if(!validUser(user)||!validId(chatId))return {skip:'invalid'};
   const key=user+':'+chatId;if(inflight.has(key))return {skip:'busy'};inflight.add(key);
   try{
-   let p;try{p=await run({type:'autoPrepare',chatId},user,true);}catch(error){return {skip:'error',error:error.message};}
-   if(p.fail){const f=await run({type:'autoFail',chatId},user,{error:p.fail,end:p.end,text:p.text,advance:true,gen:p.gen});if(f.auto)notify(user,chatId,f.auto);return {error:p.fail,...(f.paused?{paused:true}:{})};}
-   if(!p.prepared)return p;
-   const x=p.prepared;
-   try{
-    gate('generation');const target=x.mode==='raw'?await rawTarget(x.connection,user):{};
-    // Right before submitting: the settings this job was prepared under must still be
-    // current (on, same generation, same mode and connection). Turned off or changed
-    // while the connection lookup was pending means nothing is sent.
-    const current=async()=>{const now=await readAuto(chatId,user);return !now.enabled||stale(key,now,x)||now.mode!==x.mode||now.connection!==x.connection||paused.has(key)?{skip:now.enabled?'stale':'off'}:null;};
-    let changed=await current();if(changed)return changed;
-    // Receipt right before sending: if it cannot be stored, nothing is sent.
-    x.attempt=crypto.randomUUID();attempting.set(key,x.attempt);
-    const receipt={id:x.attempt,gen:x.gen,end:x.end,at:Date.now()};
-    try{await api.userStorage.setJson(attemptPath(chatId),safe(receipt),{userId:user});}catch{return {skip:'attempt',error:'자동 분석 시도 기록을 저장하지 못해 이번에는 보내지 않았습니다.'};}
-    // Writing the receipt is a wait of its own: settings turned off (or off and on)
-    // meanwhile mean nothing is sent. The receipt is closed as never sent so the chat
-    // is not paused on it.
-    changed=await current();
-    if(changed){
-     try{await api.userStorage.setJson(attemptPath(chatId),safe({...receipt,sent:false}),{userId:user});}
-     catch{try{await run({type:'autoUnsent',chatId},user,{attempt:x.attempt});}catch{}}
-     return changed;
-    }
-    gate('generation');const generated=await api.generate[x.mode]({messages:[{role:'system',content:x.system},{role:'user',content:x.input}],connection_id:x.connection,userId:user,...target});
-    const normalized=normalizeCandidates(parseCandidates(generated?.content));
-    if(normalized.total&&!normalized.items.length)throw Error('모델 응답의 후보 '+normalized.total+'개가 모두 형식 오류입니다(첫 항목: '+normalized.skipped[0].reason+').');
-    const out=await run({type:'autoPropose',chatId},user,{...x,items:normalized.items,notice:skippedNotice(normalized)});
-    if(out.auto)notify(user,chatId,out.auto);
-    // Saved candidates whose position could not be stored are not reported as success.
-    return out.skip?out:out.paused?{paused:true,added:normalized.items.length,error:AUTO_PAUSED}:{ok:true,added:normalized.items.length};
-   }catch(error){
-    try{const f=await run({type:'autoFail',chatId},user,{error:error.message,end:x.end,text:x.text,gen:x.gen,attempt:x.attempt});if(f.auto)notify(user,chatId,f.auto);}catch{}
-    return {error:error.message};
+   const results=[];let until=null;
+   for(let i=0;i<AUTO_MAX_CHUNKS;i++){
+    let p;try{p=await run({type:'autoPrepare',chatId},user,{cont:i>0,until});}catch(error){if(!i)return {skip:'error',error:error.message};break;}
+    if(!i)until=p.until||null;
+    let r;
+    if(p.fail){const f=await run({type:'autoFail',chatId},user,{error:p.fail,end:p.end,text:p.text,advance:true,gen:p.gen});if(f.auto)notify(user,chatId,f.auto);r={error:p.fail,skippedMessage:true,...(f.paused?{paused:true}:{})};}
+    else if(!p.prepared){if(!i)return p;break;}
+    else r=await autoStep(chatId,user,key,p.prepared);
+    results.push(r);
+    // Continue only after a stored chunk or a skipped oversized message.
+    if(!p.more||r.paused||r.skip||(r.error&&!r.skippedMessage))break;
    }
+   if(results.length===1){const {skippedMessage,...r}=results[0];return r;}
+   const added=results.reduce((n,r)=>n+(r.added||0),0),errors=results.filter(r=>r.error).map(r=>r.error),last=results.at(-1);
+   return {...(errors.length?{error:errors.join(' / ')}:{ok:true}),added,chunks:results.length,...(last.paused?{paused:true}:{}),...(last.skip?{skip:last.skip}:{})};
   }finally{inflight.delete(key);attempting.delete(key);}
  }
  // Host GENERATION_ENDED (payload, userId). Only finished replies count; failed,

@@ -51,8 +51,10 @@ test('input cap counts the time stamps, not only the raw message text',async()=>
  const half='x'.repeat(29990),msgs=[{id:'m1',content:half,send_date:evening},{id:'m2',content:half,send_date:evening}];
  assert.ok(half.length*2+2<=MAX_INPUT_CHARS);assert.ok(sourceInput(msgs,'Asia/Seoul').length>MAX_INPUT_CHARS);
  const f=fake(msgs,'[]'),s=createService(f.api);
- await assert.rejects(()=>s.run({type:'analyze',chatId:'a',revision:0,mode:'raw',connection:'c1',source:{scope:'last',n:2},timeZone:'Asia/Seoul'},'owner'),/원문 크기 초과: 대화 1–2 \(2개\) 입력 60,0\d\d자 \/ 한도 60,000자/);
- assert.equal(f.calls.length,0);
+ // Stamps push the pair over the limit, so the two messages go in two calls.
+ const out=await s.run({type:'analyze',chatId:'a',revision:0,mode:'raw',connection:'c1',source:{scope:'last',n:2},timeZone:'Asia/Seoul'},'owner');
+ assert.equal(f.calls.length,2);assert.match(out.notice,/대화 1–2 → 1, 2으로 나눠 분석/);
+ for(const c of f.calls)assert.ok(c.input.messages[1].content.length<=MAX_INPUT_CHARS);
 });
 
 test('model output variants are normalized',()=>{

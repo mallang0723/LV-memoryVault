@@ -32,7 +32,7 @@ test('scene tab: opening asks the count and the chronicle; the suggested next ra
  reply(r,{chronicle:chronicle({revision:4,candidates:[{...node('c1',21,40),replaces:''}]}),notice:'대화 21–40 장면 기록'});
  r=last('sceneRecord');assert.deepEqual(r.source.ranges,[{start:'41',end:'60'}],'the next range is sent after the first reply');
  reply(r,{chronicle:chronicle({revision:5,candidates:[node('c1',21,40),node('c2',41,60)],next:null})});
- assert.match(root.textContent,/2개 범위 중 2개 기록/);
+ assert.match(root.querySelector('[role=status]').textContent,/^2개 범위 기록 완료 · 검토 대기에서 확인 후 승인하세요$/);
  assert.equal(sent.filter(x=>x.type==='sceneRecord').length,2);
  cleanup();
 });

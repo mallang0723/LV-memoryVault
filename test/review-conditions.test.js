@@ -175,6 +175,18 @@ for(const [target,loadService,loadCore,loadFrontend] of targets){
    assert.doesNotMatch(input,/NEW_/);assert.match(input,/LATER_/);
   });
  }
+ test(target+' C7 chunked run: each chunk has its own receipt; a lost write on chunk 2 after restart pauses without re-sending either chunk',async()=>{
+  const f=autoFixture();await f.enable();
+  for(const [i,user,label] of [[0,true,'CHUNK1'],[1,false,'CHUNK1'],[2,true,'CHUNK2'],[3,false,'CHUNK2'],[4,true,'CHUNK3']])f.messages.push({id:'big'+i,is_user:user,content:label+'_'+'z'.repeat(25000),extra:{}});
+  let n=0;f.api.generate.raw=async input=>{f.calls.push(['generate',input]);if(++n===2){f.failAutoWrites=true;return {content:'[]'};}return {content:f.output};};
+  const out=await f.ended();assert.equal(f.gen().length,2);assert.equal(out.paused,true);
+  assert.equal(f.auto().marker.id,'big1','chunk 1 position stored');assert.equal(f.data().candidates.length,1);
+  f.failAutoWrites=false;f.s=createService(f.api,{autoDelayMs:0});
+  assert.equal((await f.ended()).skip,'uncertain');assert.equal(f.gen().length,2,'chunk 2 not re-sent after restart');
+  await f.enable();assert.equal(f.auto().marker.id,'big3','settings save resumes after chunk 2');
+  f.add(3,'LATER');assert.equal((await f.ended()).ok,true);const input=f.gen()[2][1].messages[1].content;
+  assert.match(input,/CHUNK3_/);assert.doesNotMatch(input,/CHUNK[12]_/);
+ });
  test(target+' C7 the attempt receipt is stored before the call; if it cannot be, nothing is sent',async()=>{
   const f=autoFixture();await f.enable();f.add(3);f.failAttemptWrites=true;
   const out=await f.ended();assert.equal(out.skip,'attempt');assert.equal(f.gen().length,0);

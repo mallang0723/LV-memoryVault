@@ -93,19 +93,33 @@ test('failure is recorded once and waits for the next N user messages',async()=>
  assert.equal(f.db.get('chats/a/auto.json').failed,null);
 });
 
-test('input over the limit keeps the most recent messages and moves the marker',async()=>{
+test('input over the limit is sent in chunks, oldest first, each with its own receipt and position',async()=>{
  const f=fake(turns(1)),s=createService(f.api,{autoDelayMs:0});await enable(s,3);
  const big=n=>'x'.repeat(n);
  f.messages.push({id:'old',is_user:true,content:big(MAX_INPUT_CHARS-100),extra:{}},msg(50,false),msg(51,true),msg(52,false),msg(53,true),msg(54,false));
- assert.equal((await ended(s)).ok,true);const input=f.calls[0].messages[1].content;
- assert.ok(input.length<=MAX_INPUT_CHARS);assert.ok(!input.includes(big(100)));assert.ok(input.includes('USER_53'));
- const auto=f.db.get('chats/a/auto.json');assert.equal(auto.marker.id,'m54');assert.match(auto.last.text,/앞 1개는 60,000자 한도를 넘어 생략/);
- // A single message that can never fit is skipped with a notice, not retried forever.
+ const out=await ended(s);assert.equal(out.ok,true);assert.equal(out.chunks,2);assert.equal(f.calls.length,2);
+ for(const c of f.calls)assert.ok(c.messages[1].content.length<=MAX_INPUT_CHARS);
+ assert.ok(f.calls[0].messages[1].content.includes(big(100)),'oldest chunk first');assert.ok(f.calls[1].messages[1].content.includes('USER_53'));assert.ok(!f.calls[1].messages[1].content.includes(big(100)));
+ const auto=f.db.get('chats/a/auto.json');assert.equal(auto.marker.id,'m54');assert.equal(auto.lastAttempt,f.db.get('chats/a/attempt.json').id,'last chunk receipt closed');
+ // A single message that can never fit is skipped with a note (never cut); the chunk
+ // before it is analyzed and the position moves past it.
  f.messages.push(msg(60,true),msg(61,false),msg(62,true),{id:'huge',is_user:true,content:big(MAX_INPUT_CHARS+10),extra:{}});
- assert.match((await ended(s)).error,/원문 크기 초과/);assert.equal(f.calls.length,1);
- assert.equal(f.db.get('chats/a/auto.json').marker.id,'huge');assert.equal(f.db.get('chats/a/auto.json').last.ok,false);
+ const second=await ended(s);assert.match(second.error,/대화 \d+ 메시지 하나가 60,000자 한도를 넘어 건너뜁니다\(잘라 보내지 않음\)/);
+ assert.equal(f.calls.length,3);assert.ok(!f.calls[2].messages[1].content.includes(big(100)));assert.ok(f.calls[2].messages[1].content.includes('USER_62'));
+ assert.equal(f.db.get('chats/a/auto.json').marker.id,'huge');
+ // Nothing is retried: the next reply has no new turns to send.
+ assert.equal((await ended(s)).skip,'count');assert.equal(f.calls.length,3);
 });
-
+test('a failing later chunk keeps the earlier chunk and resumes from the failed chunk after the backoff',async()=>{
+ const f=fake(turns(1)),s=createService(f.api,{autoDelayMs:0});await enable(s,3);
+ f.messages.push({id:'a1',is_user:true,content:'a'.repeat(40000),extra:{}},{id:'a2',is_user:false,content:'b'.repeat(40000),extra:{}},msg(70,true),msg(71,true));
+ let n=0;const raw=f.api.generate.raw;f.api.generate.raw=async input=>{if(++n===2){f.calls.push(input);throw Error('provider down');}return raw(input);};
+ const out=await ended(s);assert.match(out.error,/provider down/);assert.equal(f.calls.length,2);
+ const auto=f.db.get('chats/a/auto.json');assert.equal(auto.marker.id,'a1','first chunk stored');assert.equal(auto.failed.id,'m71');assert.equal(auto.lastAttempt,f.db.get('chats/a/attempt.json').id);
+ assert.equal((await ended(s)).skip,'count');assert.equal(f.calls.length,2,'no immediate retry');
+ f.messages.push(...turns(3,80));const again=await ended(s);assert.equal(again.ok,true);
+ const input=f.calls[2].messages[1].content;assert.ok(input.includes('b'.repeat(100)),'resumes with the failed chunk');assert.ok(!input.includes('a'.repeat(100)),'stored chunk not re-sent');
+});
 test('auto settings persist in their own file without touching revision or undo',async()=>{
  const f=fake(turns(2)),s=createService(f.api,{autoDelayMs:0});
  await s.run({type:'put',confirmPublic:true,chatId:'a',revision:0,item:{id:'x',layer:'elements',text:'one',scope:'public'}},'owner');

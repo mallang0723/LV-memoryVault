@@ -1,6 +1,6 @@
 import {vaultStyle} from './vault-style.js';
 import {createSceneView} from './scene-view.js';
-import {publicItems,selectSafeCandidates,candidateRisks,injectionText,MAX_INPUT_CHARS,MAX_RANGES,DEFAULT_RECENT,sourceSummary,resolveScope,nextRange,spanLabel,rangeStatus,localTimeZone,diagnose,sameBase,healthEligible,strictInt,layerNames,LOOM_CAP} from './core.js';
+import {publicItems,selectSafeCandidates,candidateRisks,injectionText,MAX_INPUT_CHARS,MAX_RANGES,DEFAULT_RECENT,sourceSummary,resolveScope,nextRange,spanLabel,rangeStatus,localTimeZone,diagnose,batchSummary,sameBase,healthEligible,strictInt,layerNames,LOOM_CAP} from './core.js';
 const tabs=[['overview','개요'],['promises','약속'],['flows','진행 흐름'],['anchors','기억 앵커'],['scenes','장면 기억'],['elements','요소 기억'],['wiki','이야기 위키']];
 const names=Object.fromEntries(tabs);
 const hasLifecycle=layer=>['promises','flows'].includes(layer);
@@ -32,7 +32,12 @@ const theme=`
 #mmc-root-v1 .lv-check input{margin-top:5px;flex:none}
 #mmc-root-v1 .lv-warning{padding:10px 12px;border-left:3px solid var(--mv-warn);background:var(--mv-paper-2);border-radius:6px;color:var(--mv-muted);font-size:12px}
 #mmc-root-v1 .lv-notice{flex:none;order:4;color:var(--mv-muted);font-size:11px;padding:8px 14px;border-top:1px solid var(--mv-line)}
-#mmc-root-v1 .lv-status{flex:none;order:5;position:sticky;bottom:0;z-index:2;padding:10px 14px;background:var(--mv-paper);border-top:1px solid var(--mv-line);font-size:12px;overflow-wrap:anywhere;margin:0}
+#mmc-root-v1 .lv-status{flex:none;order:5;position:sticky;bottom:0;z-index:2;display:flex;flex-direction:column;max-height:40vh;padding:2px 4px 2px 14px;background:var(--mv-paper);border-top:1px solid var(--mv-line);font-size:12px;overflow-wrap:anywhere;margin:0}
+#mmc-root-v1 .lv-status[hidden]{display:none!important}
+#mmc-root-v1 .lv-status-line{display:flex;align-items:center;gap:4px;min-width:0}
+#mmc-root-v1 p.lv-status-text{flex:1;min-width:0;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.4}
+#mmc-root-v1 .lv-status-line .mmc-btn{flex:none;min-width:44px;min-height:44px;padding:0 8px}
+#mmc-root-v1 .lv-status-detail{flex:1 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain;margin:0 6px 6px 0;white-space:pre-wrap;color:var(--mv-muted);line-height:1.6}
 #mmc-root-v1 .lv-chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 #mmc-root-v1 .lv-chips .mmc-chip{min-height:32px;padding:0 10px;font-size:12px;cursor:pointer}
 #mmc-root-v1 .lv-chips .mmc-chip.is-active{border-color:var(--mv-accent);background:var(--mv-accent-soft);color:var(--mv-ink)}
@@ -389,11 +394,11 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
    // Separate ranges are analyzed one model call each, in order (recent N is one call).
    const spans=src.scope==='range'?(s.spans||resolveScope({scope:'range',ranges:src.ranges},Number.MAX_SAFE_INTEGER).spans||[]):[];
    ui.analyzing=true;run.disabled=true;if(add)add.disabled=true;
-   if(spans.length>1){ui.batch={id:crypto.randomUUID(),spans,index:0,ok:[],fail:[],opts};run.textContent=batchLabel(ui.batch);sendSpan(ui.batch);ui.note(ui.status);return;}
+   if(spans.length>1){ui.batch={id:crypto.randomUUID(),spans,index:0,ok:[],fail:[],notes:[],opts};run.textContent=batchLabel(ui.batch);sendSpan(ui.batch);ui.note(ui.status);return;}
    run.textContent='분석 중…';
    send('analyze',{source:src.scope==='last'?{scope:'last',n:src.n}:{scope:'range',ranges:src.ranges.map(r=>({start:r.start,end:r.end}))},...opts});
   },c,'mmc-primary lv-run');run.dataset.run='analyze';run.setAttribute('aria-label','분석 실행');
-  el('small','누르면 고른 범위의 원문을 설정한 모델로 바로 보냅니다(한 번에 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자까지). 숨김 메시지도 함께 보냅니다. 비밀이 담긴 대화는 범위에서 빼세요. 루미버스 요약 참고가 켜져 있으면 이 채팅의 요약도 참고용으로 함께 보냅니다. 결과는 후보로만 들어가고 자동 승인하지 않습니다.',c,'mmc-muted');
+  el('small','누르면 고른 범위의 원문을 설정한 모델로 바로 보냅니다(한 번에 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자까지, 넘는 범위는 메시지 경계에서 자동으로 나눠 차례로 보내고, 하나만으로 넘는 메시지는 건너뜀). 숨김 메시지도 함께 보냅니다. 비밀이 담긴 대화는 범위에서 빼세요. 루미버스 요약 참고가 켜져 있으면 이 채팅의 요약도 참고용으로 함께 보냅니다. 결과는 후보로만 들어가고 자동 승인하지 않습니다.',c,'mmc-muted');
   const queue=row(c);el('span','검토 대기 후보 '+state.candidates.length+'개',queue);button('검토 대기 열기',()=>go('overview'),queue,'mmc-sm');
   function update(){
    const scope=src.scope==='last'?{scope:'last',n:src.n}:{scope:'range',ranges:src.ranges};
@@ -423,13 +428,14 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
  const sendSpan=(b,revision)=>{const [a,z]=b.spans[b.index];ui.status=batchLabel(b)+' ('+spanLabel([[a,z]])+')';send('analyze',{source:{scope:'range',ranges:[{start:String(a),end:String(z)}]},...b.opts,...(revision>=0?{revision}:{})},{batch:b.id});};
  function batchStep(reply){
   const b=ui.batch,label=spanLabel([b.spans[b.index]]);
-  if(reply.ok)b.ok.push(Number.isSafeInteger(reply.added)?reply.added:0);else b.fail.push('범위 '+(b.index+1)+' ('+label+') – '+String(reply.error||'알 수 없는 오류'));
+  if(reply.ok){b.ok.push(Number.isSafeInteger(reply.added)?reply.added:0);if(reply.split||/실패/.test(reply.notice||''))b.notes.push('범위 '+(b.index+1)+' ('+label+'): '+String(reply.notice||reply.split));}
+  else b.fail.push({label:'범위 '+(b.index+1)+' ('+label+')',error:reply.error});
   b.index++;
   // The reply's state is accepted only after this step, so its revision is passed on.
   if(b.index<b.spans.length){sendSpan(b,Math.max(-1,...[reply.ok?reply.state?.revision:null,get().state?.revision].filter(Number.isSafeInteger)));return false;}
   ui.batch=null;ui.analyzing=false;
   const added=b.ok.reduce((n,x)=>n+x,0);
-  ui.status=b.spans.length+'개 범위 중 '+b.ok.length+'개 성공'+(b.ok.length?' (후보 '+added+'개 추가)':'')+(b.fail.length?', 실패: '+b.fail.join(' / '):'')+(b.ok.length?' · 검토 대기에서 확인 후 승인하세요':'');
+  const r=batchSummary({total:b.spans.length,ok:b.ok.length,added:b.ok.length?added:null,fails:b.fail,notes:b.notes});ui.status=r.summary;ui.statusDetail={for:r.summary,text:r.detail};
   if(b.ok.length)ui.tab='overview';
   return true;
  }
@@ -477,6 +483,24 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
   el('p','인물 매핑·흐름별 이력·원본 데이터 변환·Keeper는 지원하지 않습니다. 가짜 설정은 표시하지 않습니다.',info,'lv-warning');
   el('p','장면록 로어북은 확장을 끄거나 지워도 남습니다. 장면 기억 탭의 장면록 설정에서 연결 해제·책 삭제를 할 수 있습니다. 과거 수동 내보내기 책은 호스트에서 직접 연결 해제·삭제하세요. 확장 비활성화는 데이터를 남깁니다. 제거 전 JSON을 내보내세요.',info);
  }
+ // Result / error notice: one line, '자세히' for the rest (scrolls inside, at most 40%
+ // of the screen), '×' closes. Tapping elsewhere or Escape folds the details.
+ const STATUS_LINE=70;
+ function drawStatus(bar=root.querySelector('.lv-status')){
+  if(!bar)return;bar.replaceChildren();
+  const text=String(ui.status||''),extra=ui.statusDetail&&ui.statusDetail.for===text?String(ui.statusDetail.text||''):'';
+  const long=text.length>STATUS_LINE,more=!!extra||long,open=more&&!!ui.statusOpen;
+  bar.hidden=!text;bar.dataset.open=String(open);
+  const line=el('div',undefined,bar,'lv-status-line');
+  const p=el('p',text,line,'lv-status-text');p.setAttribute('role','status');p.setAttribute('title',text);
+  if(more){const b=button(open?'접기':'자세히',()=>{ui.statusOpen=!open;drawStatus();},line,'mmc-ghost');b.dataset.statusMore='true';b.setAttribute('aria-expanded',String(open));}
+  const x=button('×',()=>{ui.status='';ui.statusDetail=null;ui.statusOpen=false;drawStatus();},line,'mmc-ghost');x.setAttribute('aria-label','알림 닫기');x.dataset.statusClose='true';
+  if(open){const d=el('div',[long?text:'',extra].filter(Boolean).join('\n\n'),bar,'lv-status-detail');d.dataset.statusDetail='true';}
+ }
+ if(typeof root.addEventListener==='function'){
+  root.addEventListener('click',e=>{const t=e.target;if(ui.statusOpen&&t&&t.isConnected!==false&&!t.closest?.('.lv-status')){ui.statusOpen=false;drawStatus();}});
+  root.addEventListener('keydown',e=>{if(e.key==='Escape'&&ui.status){if(ui.statusOpen)ui.statusOpen=false;else{ui.status='';ui.statusDetail=null;}drawStatus();}});
+ }
  function render(){
   // The drawer scrolls the whole panel; rebuild synchronously with no layout reads so its scroll position is kept.
   const {state,chatId,recovery}=get();root.replaceChildren();root.className='memory-cabinet';root.id='mmc-root-v1';el('style',vaultStyle+'\n'+theme);
@@ -493,7 +517,7 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
    if(used>=1800000)el('p','용량 한도 근처: 오래된 되돌리기 이력은 저장 시 자동 정리됩니다. 현재 기억·후보 자체가 가득 차면 JSON 내보내기 후 불필요한 항목을 삭제하거나 텍스트를 줄이세요. 보류는 주입만 막습니다.',main,'lv-warning');
    if(ui.editor)editor(main,state);else if(ui.tab==='overview')overview(main,state);else if(ui.tab==='settings')settings(main,state);else if(ui.tab==='analysis')analysis(main,chatId,state);else collection(main,state);
   }else if(!recovery)el('p','채팅을 열고 새로고침해 주세요.',main,'mmc-empty');
-  el('div','루미버스용 · 비공식. Lumiverse 팀이 제작·승인·보증·지원하는 확장이 아닙니다.',shell,'lv-notice');const status=el('p',ui.status||'',shell,'lv-status');status.setAttribute('role','status');
+  el('div','루미버스용 · 비공식. Lumiverse 팀이 제작·승인·보증·지원하는 확장이 아닙니다.',shell,'lv-notice');drawStatus(el('div',undefined,shell,'lv-status'));
  }
- return {render,batchStep};
+ return {render,batchStep,drawStatus};
 }

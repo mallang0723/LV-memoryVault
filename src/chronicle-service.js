@@ -1,4 +1,4 @@
-import {safe,clone,fingerprint,selectSource,sourceInput,sentStamp,spanLabel,strictInt,MAX_INPUT_CHARS} from './core.js';
+import {safe,clone,fingerprint,selectSource,sourceInput,sentStamp,spanLabel,strictInt,MAX_INPUT_CHARS,splitForInput,splitNote,chunkSpan} from './core.js';
 import {SCENE_PROMPT,SCENE_MERGE_PROMPT,SCENE_PROMPT_VERSION,SCENE_MERGE_VERSION,SCENE_BOOK_PREFIX,SCENE_BOOK_KEY,SCENE_EXT,SCENE_MAX_CANDIDATES,SCENE_LIMITS,SCENE_SOURCE_LABEL,scenePrompt,sceneEmpty,sceneClean,sceneSettings,sceneLabel,sceneTokens,sceneBodyIssue,sceneKeywords,sceneParse,sceneEvaluate,sceneFrontier,scenePlan,sceneEntry,sceneValidateMerge,sceneJoinRange,sceneApplyMerge,sceneUndoMerge,sceneNextRange,sceneHidePlan,sceneInherit,sceneIdOk,sceneRestricted} from './chronicle.js';
 // Scene chronicle service: chats/<id>/chronicle.json is the record, one chat-only world
 // book mirrors it. Every handler below runs inside the per-chat queue of service.run()
@@ -186,32 +186,44 @@ export function createChronicle(api,{gate,rawTarget}){
   let s=await load(chatId,user,chat);
   if(s.candidates.length>=SCENE_MAX_CANDIDATES)throw Error('검토 대기 장면이 '+SCENE_MAX_CANDIDATES+'개입니다. 먼저 승인하거나 버리세요.');
   const all=await api.chat.getMessages(chatId),source=selectSource(all,r.source),[start,end]=source.spans[0];
-  const input=sourceInput(source.picked.map(x=>x.m),r.timeZone);
-  if(input.length>MAX_INPUT_CHARS)throw Error('원문 크기 초과: '+source.text+' 입력 '+input.length.toLocaleString('en-US')+'자 / 한도 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자. 범위를 더 작게 나눠 기록하세요.');
+  const label=spanLabel([[start,end]]);
+  // Over the input limit: split at message boundaries; each chunk becomes its own scene
+  // (one call each, in order). A message too large alone is left out with a note.
+  const split=splitForInput(source.picked,r.timeZone),note=splitNote(label,split,'기록');
+  if(!split.chunks.length)throw Error('원문 크기 초과: '+source.text+'의 메시지가 하나만으로도 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자 한도를 넘어 기록할 수 없습니다. 그 메시지는 잘라 보내지 않습니다.');
+  if(s.candidates.length+split.chunks.length>SCENE_MAX_CANDIDATES)throw Error('이 구간은 장면 '+split.chunks.length+'개로 나뉘는데 검토 대기 장면 자리가 모자랍니다('+SCENE_MAX_CANDIDATES+'개까지). 먼저 승인하거나 버리세요.');
   const msgs=await digests(all),evaluation=sceneEvaluate(s,msgs),frontier=sceneFrontier(s,evaluation);
-  const ids=source.picked.map(x=>x.m.id),fps=source.picked.map(x=>msgs[x.index].digest);
+  const ids=source.picked.map(x=>x.m.id);
   // Checked before paying for a call: a range may only repeat one active scene exactly
   // (re-record) and must not overlap any other active record.
   const hit=frontier.filter(x=>x.range.ids.some(id=>ids.includes(id)));
   const same=hit.length===1&&hit[0].kind==='scene'&&JSON.stringify(hit[0].range.ids)===JSON.stringify(ids)?hit[0]:null;
   if(hit.length&&!same)throw Error(sceneLabel(hit[0])+'과 범위가 겹칩니다. 겹치지 않게 고르거나, 같은 장면을 다시 기록하려면 시작·끝을 그 장면과 똑같이 맞추세요.'+(hit[0].kind==='chapter'?' 장은 합치기 취소 뒤 다시 기록할 수 있습니다.':''));
-  // Reference only: the closest earlier active record that is not secret.
+  if(same&&(split.chunks.length>1||split.skipped.length))throw Error(sceneLabel(same)+'은 지금 원문이 한도를 넘어 장면 하나로 다시 기록할 수 없습니다('+note+'). 이 장면을 지운 뒤 같은 구간을 기록하면 여러 장면으로 나눠 기록합니다.');
+  // Reference only: the closest earlier active record that is not secret; for a later
+  // chunk, the scene just written for the chunk before it.
   const firstIndex=source.picked[0].index;
-  const prev=frontier.filter(x=>x!==same&&['public','unknown'].includes(x.scope)&&evaluation.get(x.id)?.state==='approved'&&evaluation.get(x.id).loc.endIndex<firstIndex).at(-1);
-  const system=scenePrompt(SCENE_PROMPT,s.settings.maxBody);
-  const user_=(prev?'〈이전 기록〉\n'+prev.body+'\n〈/이전 기록〉\n\n':'')+'〈원문〉\n'+input+'\n〈/원문〉';
-  gate('generation');
-  const generated=await api.generate[r.mode]({messages:[{role:'system',content:system},{role:'user',content:user_}],connection_id:r.connection,userId:user,...target});
-  const stamp=sentStamp(source.picked.at(-1).m,r.timeZone),parsed=sceneParse(generated?.content,stamp?'기록 '+stamp:'시각 미상');
-  const label=spanLabel([[start,end]]);
-  s.candidates.push({id:crypto.randomUUID(),kind:'scene',title:parsed.title,body:parsed.body,keywords:parsed.keywords,scope:'unknown',status:'candidate',revision:1,range:{ids,fps,start,end},parentId:'',...(same?{replaces:same.id}:{}),
-   generation:{promptVersion:SCENE_PROMPT_VERSION,model:String(target.model||''),connection:r.connection,inputHash:await fingerprint(system+'\n'+user_),at:Date.now()},at:Date.now()});
+  let prev=frontier.filter(x=>x!==same&&['public','unknown'].includes(x.scope)&&evaluation.get(x.id)?.state==='approved'&&evaluation.get(x.id).loc.endIndex<firstIndex).at(-1)?.body||'';
+  const system=scenePrompt(SCENE_PROMPT,s.settings.maxBody),made=[],proposals=[],failed=[];
+  for(const chunk of split.chunks){
+   const [a,b]=chunkSpan(chunk),part=spanLabel([[a,b]]),input=sourceInput(chunk.map(x=>x.m),r.timeZone);
+   const user_=(prev?'〈이전 기록〉\n'+prev+'\n〈/이전 기록〉\n\n':'')+'〈원문〉\n'+input+'\n〈/원문〉';
+   try{
+    gate('generation');
+    const generated=await api.generate[r.mode]({messages:[{role:'system',content:system},{role:'user',content:user_}],connection_id:r.connection,userId:user,...target});
+    const stamp=sentStamp(chunk.at(-1).m,r.timeZone),parsed=sceneParse(generated?.content,stamp?'기록 '+stamp:'시각 미상');
+    s.candidates.push({id:crypto.randomUUID(),kind:'scene',title:parsed.title,body:parsed.body,keywords:parsed.keywords,scope:'unknown',status:'candidate',revision:1,range:{ids:chunk.map(x=>x.m.id),fps:chunk.map(x=>msgs[x.index].digest),start:a,end:b},parentId:'',...(same?{replaces:same.id}:{}),
+     generation:{promptVersion:SCENE_PROMPT_VERSION,model:String(target.model||''),connection:r.connection,inputHash:await fingerprint(system+'\n'+user_),at:Date.now()},at:Date.now()});
+    made.push(part);prev=parsed.body;
+    const evidence=chunk.map(({m,index})=>({id:m.id,index,fingerprint:msgs[index].digest}));
+    for(const [layer,list] of [['promises',parsed.promises],['flows',parsed.flows]])for(const text of list)proposals.push({layer,text,evidence,source:SCENE_SOURCE_LABEL+' · '+part});
+   }catch(error){if(split.chunks.length===1)throw error;failed.push(part+' 실패: '+error.message);}
+  }
+  if(!made.length)throw Error(note+' · 모든 조각 실패: '+failed.join(' / '));
   s=await save(chatId,user,s);
   const ev2=sceneEvaluate(s,msgs),p2=scenePlan(s,ev2);
-  const proposals=[...parsed.promises.map(text=>({layer:'promises',text})),...parsed.flows.map(text=>({layer:'flows',text}))];
-  const evidence=source.picked.map(({m,index})=>({id:m.id,index,fingerprint:msgs[index].digest}));
-  return {chronicle:view(s,ev2,p2,{total:all.length,chat}),proposals,evidence,source:SCENE_SOURCE_LABEL+' · '+label,
-   notice:label+' 장면 기록 · 검토 대기에 장면 후보 1개'+(same?'(다시 기록)':'')+(proposals.length?' · 약속·진행 흐름 후보 '+proposals.length+'개는 기억 검토 대기에':'')+' · 승인하면 로어북에 씁니다'};
+  return {chronicle:view(s,ev2,p2,{total:all.length,chat}),proposals,
+   notice:label+' 장면 기록 · 검토 대기에 장면 후보 '+made.length+'개'+(same?'(다시 기록)':'')+(note?' · '+note+'(장면 '+made.length+'개)':'')+(failed.length?' · '+failed.join(' / '):'')+(proposals.length?' · 약속·진행 흐름 후보 '+proposals.length+'개는 기억 검토 대기에':'')+' · 승인하면 로어북에 씁니다'};
  }
  async function merge(r,s,ctx,msgs){
   gate('generation');needModel(r);

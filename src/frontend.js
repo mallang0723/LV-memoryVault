@@ -4,7 +4,8 @@ export function setup(ctx){
  let epoch=0,serial=0,accepted=0,chatId=null,state=null,recovery=false,alive=true;
  const pending=new Map();
  const ui={tab:'overview',filter:'all',selected:new Set(),connections:[],status:'',editor:null,transfer:'',sourceByChat:{},counts:{},countAsked:null,analyzing:false,batch:null,checking:false,health:null,healthSelected:new Set(),limits:{},queries:{},queueLayer:'all',detail:null};
- const note=message=>{ui.status=message;const n=root.querySelector('[role=status]');if(n)n.textContent=message;};
+ let view;
+ const note=message=>{ui.status=message;ui.statusDetail=null;ui.statusOpen=false;view?.drawStatus();};
  ui.note=note;
  const send=(type,extra={},meta={})=>{const requestId=crypto.randomUUID();pending.set(requestId,{...meta,epoch,type,sequence:++serial});ctx.sendToBackend({requestId,type,chatId,revision:state?.revision,...extra});};
  // Host confirmation dialog (Lumiverse 1.2.5 ctx.ui.showConfirm); dismissing it cancels.
@@ -12,7 +13,7 @@ export function setup(ctx){
   if(typeof ctx.ui.showConfirm==='function'){try{return (await ctx.ui.showConfirm(options))?.confirmed===true;}catch{return false;}}
   return typeof globalThis.confirm==='function'?!!globalThis.confirm(options.message):true;
  };
- const view=createView(root,{send,get:()=>({chatId,state,recovery,epoch}),ui,confirm});
+ view=createView(root,{send,get:()=>({chatId,state,recovery,epoch}),ui,confirm});
  const offMessage=ctx.onBackendMessage(reply=>{
   // Automatic analysis finished in the background: refresh the open chat only.
   if(reply?.event==='autoAnalysis'&&!reply.requestId){if(alive&&reply.chatId&&reply.chatId===chatId){ui.auto=reply.auto||null;send('load');}return;}

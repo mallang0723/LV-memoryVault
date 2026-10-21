@@ -4,6 +4,7 @@ import {createHash} from 'node:crypto';
 import {createService} from '../src/service.js';
 import {classifyCheck} from './run-check.js';
 import {browserQa} from './browser-qa.js';
+import {playwrightQa} from './playwright-qa.js';
 const receipts='context/receipts';mkdirSync(receipts,{recursive:true});
 const results=[];
 for(const [name,args] of [['tests',['--test','--test-isolation=none',...readdirSync('test').filter(x=>x.endsWith('.test.js')).sort().map(x=>'test/'+x)]],['build',['scripts/build.js']],['backend-syntax',['--check','dist/backend.js']],['frontend-syntax',['--check','dist/frontend.js']]]){
@@ -22,6 +23,9 @@ results.push({name:'limited-static-policy-check (not host scanner)',exitCode:mat
 // Headless Chromium at 390px over the built panel with a synthetic backend (skipped,
 // not failed, when no Chromium is installed).
 const browser=browserQa({receipts});
+// Notice at 360×460 in Chromium and Firefox via Playwright (only when PLAYWRIGHT_MODULE is set).
+const pwr=await playwrightQa({receipts});
+results.push({name:'notice-360x460 (Playwright Chromium+Firefox)',exitCode:pwr.exitCode,...(pwr.skipped?{skipped:pwr.reason}:{failures:pwr.failures})});
 results.push({name:'browser-390 (headless Chromium, synthetic backend)',exitCode:browser.exitCode,...(browser.skipped?{skipped:browser.reason}:{failures:browser.failures})});
 writeFileSync(receipts+'/results.json',JSON.stringify({time:new Date().toISOString(),results,stockHostIntegration:'NOT RUN',browserLayout:browser.skipped?'NOT RUN; DOM structure only ('+browser.reason+')':'headless Chromium 390px, synthetic backend (scene panel)',fakeModelOnly:true},null,2));
 console.log(JSON.stringify(results));process.exitCode=results.some(r=>r.exitCode!==0)?1:0;

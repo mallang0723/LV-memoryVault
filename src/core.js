@@ -253,6 +253,17 @@ export function nextRange(prev,total){
  const start=hi+1;if(start>total)return null;
  return {start:String(start),end:String(Math.min(total,start+(hi-lo)))};
 }
+// Panel status for a multi-range run: one short summary line plus details (one line
+// per range note or failure) shown only when the user expands it.
+const shortReason=e=>String(e||'알 수 없는 오류').split(/[:.(\n]/)[0].trim().slice(0,30)||'알 수 없는 오류';
+export function batchSummary({total,ok,added=null,fails=[],notes=[],noun='범위',done='분석 완료',next='검토 대기에서 확인 후 승인하세요'}){
+ const reasons=[...new Set(fails.map(f=>shortReason(f.error)))];
+ const tally=added===null?'':' (후보 '+added+'개 추가)';
+ const summary=fails.length&&!ok?total+'개 '+noun+' 모두 실패'+(reasons.length===1?' — '+reasons[0]:'')
+  :fails.length?total+'개 '+noun+' 중 '+ok+'개 성공'+tally+' · '+fails.length+'개 실패'+(reasons.length===1?' ('+reasons[0]+')':'')
+  :total+'개 '+noun+' '+done+tally;
+ return {summary:summary+(ok&&next?' · '+next:''),detail:[...notes.filter(Boolean),...fails.map(f=>f.label+' – '+String(f.error||'알 수 없는 오류'))].join('\n')};
+}
 export const spanLabel=spans=>'대화 '+spans.map(([a,b])=>a===b?String(a):a+'–'+b).join(', ');
 // Panel summary from the count only: "대화 120–141 (22개, 숨김 5개 포함)".
 export function sourceSummary(scope,total,hidden=[]){
@@ -285,11 +296,33 @@ export function sentStamp(m,zone){
  let p;try{p=Object.fromEntries(formatters.get(tz).formatToParts(new Date(ms)).map(x=>[x.type,x.value]));}catch{return null;}
  return p.year+'-'+p.month+'-'+p.day+' '+(p.hour==='24'?'00':p.hour)+':'+p.minute;
 }
+const sourceHeader=zone=>'[메시지 전송 시각 기준: '+(validTimeZone(zone)||'UTC (사용자 시간대 미확인)')+']';
+const sourceLine=(m,zone)=>{const t=sentStamp(m,validTimeZone(zone));return (t?'[전송 '+t+'] ':'[전송 시각 미상] ')+String(m.content??'');};
 export function sourceInput(messages,zone){
  if(!messages.length)return '';
- const tz=validTimeZone(zone),header='[메시지 전송 시각 기준: '+(tz||'UTC (사용자 시간대 미확인)')+']';
- return [header,...messages.map(m=>{const t=sentStamp(m,tz);return (t?'[전송 '+t+'] ':'[전송 시각 미상] ')+String(m.content??'');})].join('\n\n');
+ return [sourceHeader(zone),...messages.map(m=>sourceLine(m,zone))].join('\n\n');
 }
+// A span too large for one call, split at message boundaries into consecutive chunks
+// whose sourceInput() each fits `limit` (oldest first). A message that cannot fit even
+// alone is never cut: it is returned in `skipped` and the chunks run around it.
+// items: [{m,index}] in chat order.
+export function splitForInput(items,zone,limit=MAX_INPUT_CHARS){
+ const head=sourceHeader(zone).length,chunks=[],skipped=[];let cur=[],len=head;
+ for(const it of items){
+  const size=2+sourceLine(it.m,zone).length;
+  if(head+size>limit){if(cur.length){chunks.push(cur);cur=[];len=head;}skipped.push(it);continue;}
+  if(cur.length&&len+size>limit){chunks.push(cur);cur=[];len=head;}
+  cur.push(it);len+=size;
+ }
+ if(cur.length)chunks.push(cur);
+ return {chunks,skipped};
+}
+// "대화 1–30 → 1–12, 13–24, 25–30으로 나눠" plus skipped single messages.
+export const chunkSpan=chunk=>[chunk[0].index+1,chunk.at(-1).index+1];
+export const splitNote=(label,split,verb='분석')=>{
+ const parts=split.chunks.map(c=>{const [a,b]=chunkSpan(c);return a===b?String(a):a+'–'+b;});
+ return [split.chunks.length>1?label+' → '+parts.join(', ')+'으로 나눠 '+verb:'',split.skipped.length?'메시지 '+split.skipped.map(x=>x.index+1).join(', ')+'은 하나만으로 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자 한도를 넘어 건너뜀(잘라 보내지 않음)':''].filter(Boolean).join(' · ');
+};
 // Lumiverse's own chat summary (Loom Summary): one text per chat, stored by the host in
 // chat.metadata.loom_summary (read through chats.get, the existing `chats` permission).
 // Reference only, never a memory: it goes after the raw input, only into the room the
