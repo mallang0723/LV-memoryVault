@@ -530,8 +530,18 @@ function sceneLocate(range,pos,msgs){
  for(let k=0;k<at.length;k++){if(k&&at[k]!==at[k-1]+1)return null;if(msgs[at[k]].digest!==range.fps[k])return null;}
  return {startIndex:at[0],endIndex:at.at(-1)};
 }
+// Public chapters holding a node that is not public at any depth (a child narrowed to
+// unknown/secret after the merge). Such a chapter carries text that may no longer reach
+// the world book, so it is stale and has no entry at all, whatever its revisions say.
+export function sceneRestricted(state){
+ const nodes=new Map(state.nodes.map(x=>[x.id,x])),memo=new Map();
+ const below=(x,seen)=>{if(memo.has(x.id))return memo.get(x.id);if(seen.has(x.id))return false;seen.add(x.id);
+  const hit=x.kind==='chapter'&&(x.children||[]).some(c=>{const n=nodes.get(c.id);return !n||!sceneWritable(n)||below(n,seen);});
+  memo.set(x.id,hit);return hit;};
+ return new Set(state.nodes.filter(x=>sceneWritable(x)&&below(x,new Set())).map(x=>x.id));
+}
 export function sceneEvaluate(state,msgs){
- const nodes=new Map(state.nodes.map(x=>[x.id,x])),pos=new Map(msgs.map((m,i)=>[m.id,i]));
+ const nodes=new Map(state.nodes.map(x=>[x.id,x])),pos=new Map(msgs.map((m,i)=>[m.id,i])),restricted=sceneRestricted(state);
  const forced=new Map();
  // Graph integrity: every child of a live chapter points back to it; every parentId
  // names a live chapter that lists the node. Offenders are held, never released.
@@ -552,7 +562,7 @@ export function sceneEvaluate(state,msgs){
     const contiguous=located&&locs.every((l,i)=>!i||l.startIndex===locs[i-1].endIndex+1);
     const loc=located?{startIndex:locs[0].startIndex,endIndex:locs.at(-1).endIndex}:null;
     const bad=kids.some(k=>!k.n||k.n.revision!==k.c.revision||!['approved'].includes(k.r.state));
-    out=forced.has(id)?{state:'held',reason:forced.get(id),loc}:x.status==='held'?{state:'held',reason:'held',loc}:located&&!contiguous?{state:'held',reason:'gap',loc}:bad||!located?{state:'stale',reason:'child',loc}:{state:'approved',loc};}
+    out=forced.has(id)?{state:'held',reason:forced.get(id),loc}:x.status==='held'?{state:'held',reason:'held',loc}:located&&!contiguous?{state:'held',reason:'gap',loc}:restricted.has(id)?{state:'stale',reason:'scope',loc}:bad||!located?{state:'stale',reason:'child',loc}:{state:'approved',loc};}
    visiting.delete(id);memo.set(id,out);return out;};
   const result=new Map();
   for(const x of nodes.values()){const base=own(x.id);let st=base.state;const p=x.parentId&&nodes.get(x.parentId);
@@ -575,10 +585,10 @@ export function sceneFrontier(state,evaluation){
 // Only public scenes reach the world book; unknown / secret / character stay internal.
 export const sceneWritable=x=>x.scope==='public';
 // Activation plan per node: 'constant' | 'keyword' | 'off' (entry kept, disabled) |
-// 'none' (no entry at all: not public, or undone).
+// 'none' (no entry at all: not public, holding a non-public node, or undone).
 export function scenePlan(state,evaluation){
- const s=state.settings,plan=new Map();
- const injectable=sceneFrontier(state,evaluation).filter(x=>evaluation.get(x.id)?.state==='approved'&&sceneWritable(x));
+ const s=state.settings,plan=new Map(),restricted=sceneRestricted(state);
+ const injectable=sceneFrontier(state,evaluation).filter(x=>evaluation.get(x.id)?.state==='approved'&&sceneWritable(x)&&!restricted.has(x.id));
  const chapters=injectable.filter(x=>x.kind==='chapter').slice(-s.constantChapters),scenes=injectable.filter(x=>x.kind==='scene').slice(-s.constantScenes);
  // Oldest constants leave first until the estimate fits the budget.
  const constant=injectable.filter(x=>chapters.includes(x)||scenes.includes(x));
@@ -587,7 +597,7 @@ export function scenePlan(state,evaluation){
  const on=new Set(constant.map(x=>x.id));
  for(const x of state.nodes){
   const ev=evaluation.get(x.id);
-  if(!sceneWritable(x)||x.status==='undone')plan.set(x.id,'none');
+  if(!sceneWritable(x)||x.status==='undone'||restricted.has(x.id))plan.set(x.id,'none');
   else if(ev?.state==='approved'&&on.has(x.id))plan.set(x.id,'constant');
   else if(ev?.state==='approved'&&s.keywords&&x.keywords.length)plan.set(x.id,'keyword');
   else plan.set(x.id,'off');
@@ -651,15 +661,19 @@ export function sceneNextRange(state,total,len=20){
 // Auto-hide (opt-in). Only messages covered by constant (always injected) nodes are
 // hidden, never the last `protectRecent`; only messages this extension hid are ever
 // unhidden. A message the user unhid after we hid it is left visible from then on.
+// Hiding needs the summaries to actually reach the prompt: `injected` (injection on and
+// our book attached to the chat) and an entry written for the node. Otherwise nothing
+// new is hidden and every message we hid comes back (book detached or deleted).
 // msgs: [{id,hidden}] in host order.
-export function sceneHidePlan(state,plan,msgs,{locked=false}={}){
+export function sceneHidePlan(state,plan,msgs,{locked=false,injected=false}={}){
  const s=state.settings,ours=new Set(state.hiddenByUs),keep=new Set(state.keepVisible),byId=new Map(msgs.map((m,i)=>[m.id,{...m,index:i}]));
- // Frozen while LumiBooks is present, except that turning auto-hide off still returns
- // every message we hid.
- if(locked&&s.autoHide)return {hide:[],unhide:[],hiddenByUs:[...ours].filter(id=>byId.has(id)),keepVisible:[...keep].filter(id=>byId.has(id)),locked:true};
+ const active=s.autoHide&&injected===true;
+ // Frozen while LumiBooks is present, except that turning auto-hide off (or injection
+ // ending) still returns every message we hid.
+ if(locked&&active)return {hide:[],unhide:[],hiddenByUs:[...ours].filter(id=>byId.has(id)),keepVisible:[...keep].filter(id=>byId.has(id)),locked:true};
  const target=new Set();
- if(s.autoHide){const limit=msgs.length-s.protectRecent;
-  for(const x of state.nodes)if(plan.plan.get(x.id)==='constant')for(const id of x.range.ids){const m=byId.get(id);if(m&&m.index<limit)target.add(id);}}
+ if(active){const limit=msgs.length-s.protectRecent;
+  for(const x of state.nodes)if(plan.plan.get(x.id)==='constant'&&x.entry)for(const id of x.range.ids){const m=byId.get(id);if(m&&m.index<limit)target.add(id);}}
  const hide=[],unhide=[],next=new Set();
  for(const id of ours){const m=byId.get(id);if(!m)continue;
   if(!m.hidden){keep.add(id);continue;}// unhidden by someone else: respected, never re-hidden
@@ -831,8 +845,11 @@ export function createChronicle(api,{gate,rawTarget}){
   // Attach while enabled; detach when the user turned the book off. Branch copies of
   // another chat's book are dropped either way.
   if(report.permission){const r=await attach(chatId,user,s.book?.id||null,!!s.book&&s.settings.inject);report.foreign=r.foreign;report.attached=r.attached;}
-  // Hiding: opt-in, frozen while LumiBooks manages the same chat.
-  const locked=!!chat?.metadata?.lumibooks_book_id,hp=sceneHidePlan(s,p,msgs,{locked});
+  // Hiding: opt-in, only while our entries actually reach the prompt (injection on,
+  // our book attached); frozen while LumiBooks manages the same chat. Detached,
+  // deleted or turned off: every message we hid comes back.
+  const injected=report.permission&&s.settings.inject&&!!s.book&&report.attached===true;
+  const locked=!!chat?.metadata?.lumibooks_book_id,hp=sceneHidePlan(s,p,msgs,{locked,injected});
   const ours=new Set(hp.hiddenByUs);
   if((hp.hide.length||hp.unhide.length)&&typeof api.chat.setMessagesHidden==='function'){
    gate('chat_mutation');if(!await api.chats.get(chatId,user))throw Error('채팅 소유권 확인 실패');
@@ -855,7 +872,7 @@ export function createChronicle(api,{gate,rawTarget}){
    ...(candidate?{replaces:x.replaces||''}:{state:evaluation?.get(x.id)?.state||'stale',reason:evaluation?.get(x.id)?.reason||'',mode:p?.plan.get(x.id)||'none',parentId:x.parentId,children:(x.children||[]).map(c=>c.id),entry:!!x.entry,entryEdited:!!x.entryEdited})});
   const ids=Array.isArray(chat?.metadata?.chat_world_book_ids)?chat.metadata.chat_world_book_ids:[];
   return {revision:s.revision,nodes:s.nodes.map(x=>row(x,false)),candidates:s.candidates.map(x=>row(x,true)),settings:s.settings,
-   book:s.book?{name:s.book.name,attached:ids.includes(s.book.id)}:null,constantTokens:p?.constantTokens||0,
+   book:s.book?{name:s.book.name,ref:s.book.id,attached:ids.includes(s.book.id)}:null,constantTokens:p?.constantTokens||0,
    permission:has('world_books'),lumibooks:!!chat?.metadata?.lumibooks_book_id,branch:!!s.branchFrom,hidden:s.hiddenByUs.length,
    next:Number.isSafeInteger(total)?sceneNextRange(s,total):null,total,...(report?{report:{...report,errors:report.errors.slice(0,3)}}:{})};
  }
@@ -952,10 +969,14 @@ export function createChronicle(api,{gate,rawTarget}){
    if(!['public','unknown','secret'].includes(scope)||(isCandidate&&scope==='public'))throw Error('공개 범위 형식 오류');
    if(scope==='public'&&x.scope!=='public'&&r.confirmPublic!==true)throw Error('공개 범위 확대: 명시 확인 필요');
    const content=body!==x.body||String(r.title??x.title)!==x.title||JSON.stringify(r.keywords===undefined?x.keywords:sceneKeywords(r.keywords))!==JSON.stringify(x.keywords);
+   // A scope change is a change the chapters above depend on too: narrowing it must
+   // withdraw every chapter that carries this text (they become stale and lose their
+   // entries), so it bumps the revision like an edited body.
+   const rescoped=scope!==x.scope,narrowed=rescoped&&x.scope==='public';
    Object.assign(x,{body,title:String(r.title??x.title).replace(/\s+/g,' ').trim().slice(0,40),keywords:r.keywords===undefined?x.keywords:sceneKeywords(r.keywords),scope});
-   if(!isCandidate&&content)x.revision++;
+   if(!isCandidate&&(content||rescoped))x.revision++;
    if(!isCandidate&&content)force=[x.id];
-   notice=sceneLabel(x)+' 저장'+(!isCandidate&&content?' · 이 장면을 담은 장은 갱신 필요로 바뀝니다':'');sync=!isCandidate;
+   notice=sceneLabel(x)+' 저장'+(!isCandidate&&narrowed?' · 로어북에서 빼고, 이 장면을 담은 장도 모두 주입을 멈춥니다':!isCandidate&&(content||rescoped)?' · 이 장면을 담은 장은 갱신 필요로 바뀝니다':'');sync=!isCandidate;
   }else if(r.type==='sceneDelete'){
    const x=findNode(s,r.id);if(x.kind!=='scene')throw Error('장은 지우지 않고 합치기 취소로 풉니다.');if(x.parentId&&s.nodes.some(y=>y.id===x.parentId&&y.status!=='undone'))throw Error('장에 들어간 장면은 먼저 합치기를 취소하세요.');
    s.nodes=s.nodes.filter(y=>y!==x);notice=sceneLabel(x)+' 삭제 · 로어북 엔트리도 지웁니다';
@@ -966,11 +987,13 @@ export function createChronicle(api,{gate,rawTarget}){
    for(const k of Object.keys(SCENE_LIMITS))num(k);
    if(r.keywords!==undefined)next.keywords=r.keywords===true;
    if(r.autoHide!==undefined){if(r.autoHide===true&&!s.settings.autoHide&&chat?.metadata?.lumibooks_book_id)throw Error('이 채팅에서 LumiBooks를 쓰고 있어 원문 자동 숨김을 켤 수 없습니다(서로 숨김을 풀어 버립니다).');next.autoHide=r.autoHide===true;}
-   s.settings=sceneSettings(next);notice='장면록 설정 저장';
+   s.settings=sceneSettings(next);notice='장면록 설정 저장'+(s.settings.autoHide&&!s.settings.inject?' · 로어북 연결이 꺼져 있어 원문을 숨기지 않습니다(다시 연결하면 숨깁니다)':'');
   }else if(r.type==='sceneBook'){
    if(r.action==='attach'||r.action==='detach'){s.settings={...s.settings,inject:r.action==='attach'};notice=r.action==='attach'?'장면록 로어북을 이 채팅에 연결합니다':'장면록 로어북 연결 해제 · 장면록은 주입되지 않습니다(기록은 그대로)';}
    else if(r.action==='delete'){
     if(r.confirm!==true)throw Error('책 삭제 명시 확인 필요');
+    // Bound to the book the confirmation named (the pointer can move without a revision change).
+    if((s.book?.id||'')!==(typeof r.bookRef==='string'?r.bookRef:''))throw Error('확인한 장면록 책이 그사이 바뀌었습니다. 새로고침 후 다시 하세요.');
     if(s.book){let b=null;try{b=await api.world_books.get(s.book.id,user);}catch{}
      if(b&&sameChat(b,chatId)){await attach(chatId,user,s.book.id,false);await api.world_books.delete(s.book.id,user);owners.delete(s.book.id);}}
     s.book=null;s.settings={...s.settings,inject:false};for(const x of s.nodes){x.entry=null;x.entryEdited=false;}
@@ -994,8 +1017,9 @@ export function createChronicle(api,{gate,rawTarget}){
   return {chronicle:view(s,evaluation,p,{total:all.length,chat:fresh,report}),...(notice?{notice}:{})};
  }
  // World-info interceptor (fail-safe behind the event-driven sync): any entry this
- // extension wrote is turned off for this prompt unless it belongs to this chat's own
- // book and its node is approved, public and unchanged against the messages the host
+ // extension wrote is turned off for this prompt unless injection is on, it belongs to
+ // this chat's own book and its node is approved, public (every node below it public
+ // too) and unchanged against the messages the host
  // is assembling from. Errors turn our entries off; other entries are never touched.
  async function worldInfoGuard(ctx){
   const ours=(Array.isArray(ctx?.entries)?ctx.entries:[]).filter(e=>e?.extensions&&typeof e.extensions==='object'&&e.extensions[SCENE_EXT]);
@@ -1004,10 +1028,12 @@ export function createChronicle(api,{gate,rawTarget}){
   try{
    const user=ctx.userId,chatId=ctx.chatId;
    if(!sceneIdOk(chatId)||typeof user!=='string'||!user||!await api.chats.get(chatId,user))return {disabled:off};
-   const s=await readStored(chatId,user);if(!s?.book)return {disabled:off};
-   const msgs=await digests(Array.isArray(ctx.messages)?ctx.messages:[]),evaluation=sceneEvaluate(s,msgs),plan=scenePlan(s,evaluation).plan;
+   const s=await readStored(chatId,user);if(!s?.book||!s.settings.inject)return {disabled:off};
+   const msgs=await digests(Array.isArray(ctx.messages)?ctx.messages:[]),evaluation=sceneEvaluate(s,msgs),plan=scenePlan(s,evaluation).plan,restricted=sceneRestricted(s);
+   // Revision alone is not enough: a node narrowed below public at any depth withdraws
+   // every chapter above it.
    const disabled=ours.filter(e=>{const ext=e.extensions[SCENE_EXT],x=s.nodes.find(y=>y.id===ext?.nodeId);
-    return !(ext.chatId===chatId&&e.world_book_id===s.book.id&&x&&x.entry?.id===e.id&&x.revision===ext.revision&&evaluation.get(x.id)?.state==='approved'&&['constant','keyword'].includes(plan.get(x.id)));}).map(e=>e.id);
+    return !(ext.chatId===chatId&&e.world_book_id===s.book.id&&x&&x.scope==='public'&&!restricted.has(x.id)&&x.entry?.id===e.id&&x.revision===ext.revision&&evaluation.get(x.id)?.state==='approved'&&['constant','keyword'].includes(plan.get(x.id)));}).map(e=>e.id);
    return disabled.length?{disabled}:undefined;
   }catch{return {disabled:off};}
  }
@@ -1143,7 +1169,10 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
  const readAuto=async(chatId,user)=>{try{if(!await api.userStorage.exists(autoPath(chatId),user))return autoOff();return cleanAuto(safe(await api.userStorage.getJson(autoPath(chatId),{userId:user})));}catch{return autoOff();}};
  const writeAuto=(chatId,user,value)=>api.userStorage.setJson(autoPath(chatId),safe(value),{userId:user});
  // An attempt file that exists but cannot be read counts as an open attempt (no end known).
+ // A receipt marked sent:false (closed before the call because the settings changed
+ // while it was being written) is no attempt at all.
  const readAttempt=async(chatId,user)=>{let v;try{if(!await api.userStorage.exists(attemptPath(chatId),user))return null;v=safe(await api.userStorage.getJson(attemptPath(chatId),{userId:user}));}catch{return {id:'unreadable',end:null};}
+  if(v&&validId(v.id)&&v.sent===false)return null;
   return v&&validId(v.id)?{id:v.id,gen:validId(v.gen)?v.gen:null,end:cleanMarker(v.end),at:Number.isFinite(v.at)?v.at:0}:{id:'unreadable',end:null};};
  // Open: not matched by a stored outcome, and neither the stored position nor saved
  // automatic candidates reach the end of its span.
@@ -1164,7 +1193,7 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
  async function run(request,user,internal){
   if(!validUser(user))throw Error('인증된 사용자 문맥 없음');
   const r=safe(request);gate('chats');
-  if(['autoPrepare','autoFail','autoPropose','healthChanges'].includes(r?.type)&&!internal)throw Error('알 수 없는 작업');
+  if(['autoPrepare','autoFail','autoPropose','autoUnsent','healthChanges'].includes(r?.type)&&!internal)throw Error('알 수 없는 작업');
   // `user` is the host-authenticated identity (frontend message routing or
   // interceptor context), never a payload field. Every host call below passes it,
   // so operator-scoped installs (explicit userId required) and user-scoped
@@ -1178,6 +1207,9 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
    gate('chats');const chat=await api.chats.get(chatId,user);if(!chat)throw Error('채팅 소유권 확인 실패');
    const path='chats/'+chatId+'/data.json';
    if(r.type==='autoPrepare')return autoPrepare(chatId,user,chat,key);
+   // A receipt whose call never happened, closed through auto.json when it could not
+   // be marked unsent itself (inside the queue, so it never races a settings save).
+   if(r.type==='autoUnsent'){const a=await readAuto(chatId,user);await settleAttempt(chatId,user,a,internal);return {skip:'unsent'};}
    if(r.type==='autoFail'){
     const a=await readAuto(chatId,user);if(!a.enabled)return {skip:'off'};
     // A job from an older settings generation (turned off, or off and on again) never
@@ -1442,11 +1474,21 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
     // Right before submitting: the settings this job was prepared under must still be
     // current (on, same generation, same mode and connection). Turned off or changed
     // while the connection lookup was pending means nothing is sent.
-    const now=await readAuto(chatId,user);
-    if(!now.enabled||stale(key,now,x)||now.mode!==x.mode||now.connection!==x.connection||paused.has(key))return {skip:now.enabled?'stale':'off'};
+    const current=async()=>{const now=await readAuto(chatId,user);return !now.enabled||stale(key,now,x)||now.mode!==x.mode||now.connection!==x.connection||paused.has(key)?{skip:now.enabled?'stale':'off'}:null;};
+    let changed=await current();if(changed)return changed;
     // Receipt right before sending: if it cannot be stored, nothing is sent.
     x.attempt=crypto.randomUUID();attempting.set(key,x.attempt);
-    try{await api.userStorage.setJson(attemptPath(chatId),safe({id:x.attempt,gen:x.gen,end:x.end,at:Date.now()}),{userId:user});}catch{return {skip:'attempt',error:'자동 분석 시도 기록을 저장하지 못해 이번에는 보내지 않았습니다.'};}
+    const receipt={id:x.attempt,gen:x.gen,end:x.end,at:Date.now()};
+    try{await api.userStorage.setJson(attemptPath(chatId),safe(receipt),{userId:user});}catch{return {skip:'attempt',error:'자동 분석 시도 기록을 저장하지 못해 이번에는 보내지 않았습니다.'};}
+    // Writing the receipt is a wait of its own: settings turned off (or off and on)
+    // meanwhile mean nothing is sent. The receipt is closed as never sent so the chat
+    // is not paused on it.
+    changed=await current();
+    if(changed){
+     try{await api.userStorage.setJson(attemptPath(chatId),safe({...receipt,sent:false}),{userId:user});}
+     catch{try{await run({type:'autoUnsent',chatId},user,{attempt:x.attempt});}catch{}}
+     return changed;
+    }
     gate('generation');const generated=await api.generate[x.mode]({messages:[{role:'system',content:x.system},{role:'user',content:x.input}],connection_id:x.connection,userId:user,...target});
     const normalized=normalizeCandidates(parseCandidates(generated?.content));
     if(normalized.total&&!normalized.items.length)throw Error('모델 응답의 후보 '+normalized.total+'개가 모두 형식 오류입니다(첫 항목: '+normalized.skipped[0].reason+').');

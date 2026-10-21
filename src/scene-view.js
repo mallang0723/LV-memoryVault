@@ -6,7 +6,19 @@ const SCENE_MODE_NAMES={constant:'상시',keyword:'키워드',off:'꺼짐',none:
 const SCENE_STATE_NAMES={stale:'갱신 필요 (원문 또는 하위 장면이 바뀜)',held:'보류',archived:'보관 (장에 합쳐짐)',undone:'합치기 취소됨'};
 const SCENE_SCOPE_NAMES={public:'공개',unknown:'비공개 (로어북에 안 씀)',secret:'비밀 (로어북에 안 씀)',character:'인물 제한 (로어북에 안 씀)'};
 export function createSceneView({el,button,card,field,check,send,get,ui,confirm,rerender}){
- const sceneSend=(type,extra={},after)=>send(type,{...extra,...(ui.chronicle?{sceneRevision:ui.chronicle.revision}:{})},{scene:true,after});
+ // The revision the panel last saw, unless the caller pins one (a confirmed delete).
+ const sceneSend=(type,extra={},after)=>send(type,{...(ui.chronicle?{sceneRevision:ui.chronicle.revision}:{}),...extra},{scene:true,after});
+ // A destructive action confirmed in a dialog is bound to the chat, panel epoch,
+ // chronicle revision and (for the book) the book it was opened for. Anything changed
+ // while the dialog was open (chat switch, a sync or another panel's edit) sends
+ // nothing; the request carries the opened revision so the service rejects it too.
+ const opened=()=>{const g=get(),c=ui.chronicle;return {chatId:g.chatId,epoch:g.epoch,chronicle:c?.chatId,revision:c?.revision,book:c?.book?.ref||''};};
+ async function confirmed(options,what){
+  const at=opened();if(!await confirm(options))return null;const now=opened();
+  if(now.chatId!==at.chatId||now.epoch!==at.epoch){ui.note('확인 창을 연 뒤 채팅이 바뀌어 '+what+' 않았습니다.');return null;}
+  if(now.chronicle!==at.chronicle||now.revision!==at.revision||now.book!==at.book||!Number.isSafeInteger(at.revision)){ui.note('확인 창을 연 뒤 장면록이 바뀌어 '+what+' 않았습니다. 다시 확인하고 하세요.');rerender();return null;}
+  return at;
+ }
  const short=(s,n=40)=>{s=String(s??'').replace(/\s+/g,' ').trim();return s.length>n?s.slice(0,n-1)+'…':s;};
  const number=(parent,label,value,set,onInput)=>{const x=el('input',undefined,parent);x.type='text';x.setAttribute('inputmode','numeric');x.setAttribute('pattern','[0-9]*');x.setAttribute('aria-label',label);x.value=String(value??'');x.oninput=()=>{set(x.value);onInput?.();};x.onchange=x.oninput;return x;};
  const model=()=>({mode:ui.mode||'raw',connection:ui.connection,timeZone:localTimeZone()});
@@ -109,7 +121,7 @@ export function createSceneView({el,button,card,field,check,send,get,ui,confirm,
    const d=el('div',undefined,a,'lv-detail');el('pre',x.body,d);
    el('small',(x.keywords.length?'키워드: '+x.keywords.join(', '):'키워드 없음 (상시가 아니면 주입되지 않음)'),d,'mmc-muted');
    if(x.kind==='chapter'){const kids=c.nodes.filter(y=>x.children.includes(y.id)).map(y=>y.label);el('small','보관된 장면: '+kids.join(', ')+' (주입 안 함)',d,'mmc-muted');
-    if(x.state==='stale')el('p','이 장에 들어간 장면이나 원문이 바뀌어 주입을 멈췄습니다. 합치기 취소로 원래 장면을 다시 켜거나, 취소한 뒤 다시 합치세요. 자동으로 다시 만들지는 않습니다.',d,'lv-warning');}
+    if(x.state==='stale')el('p',x.reason==='scope'?'이 장에 들어간 장면 중 비공개·비밀로 바꾼 것이 있어 로어북에서 뺐습니다. 합치기 취소로 원래 장면을 다시 켜거나, 취소한 뒤 공개 장면끼리 다시 합치세요.':'이 장에 들어간 장면이나 원문이 바뀌어 주입을 멈췄습니다. 합치기 취소로 원래 장면을 다시 켜거나, 취소한 뒤 다시 합치세요. 자동으로 다시 만들지는 않습니다.',d,'lv-warning');}
    else if(x.state==='stale')el('p','기록한 뒤 원문이 바뀌어(편집·스와이프·삭제) 주입을 멈췄습니다. 다시 기록하면 새 후보로 바꿀 수 있습니다.',d,'lv-warning');
    if(x.entryEdited){el('p','로어북 화면에서 이 엔트리 본문이 바뀌었습니다. 받아들이면 보관함 본문도 바뀝니다.',d,'lv-warning');const e=el('div',undefined,d,'lv-actions');
     button('받아들이기',()=>sceneSend('sceneEntry',{id:x.id,action:'accept'}),e).dataset.sceneAccept=x.id;button('되돌리기',()=>sceneSend('sceneEntry',{id:x.id,action:'revert'}),e);}
@@ -117,7 +129,7 @@ export function createSceneView({el,button,card,field,check,send,get,ui,confirm,
    button('고치기',()=>openEdit(x),act);
    if(x.kind==='scene')button('다시 기록',()=>{const box=rangesFor(chatId,c);box.rows=[{start:String(x.start),end:String(x.end)}];box.touched=true;ui.note(x.label+'을 구간 기록에 넣었습니다. 기록하기를 누르면 다시 기록합니다.');rerender();},act).dataset.sceneRedo=x.id;
    if(x.kind==='chapter')button('합치기 취소',()=>sceneSend('sceneUnmerge',{id:x.id}),act).dataset.sceneUnmerge=x.id;
-   if(x.kind==='scene')button('삭제',async()=>{const opened=get();if(!await confirm({title:'장면 삭제',message:x.label+' 기록을 지우고 로어북 엔트리도 지웁니다. 되돌릴 수 없습니다.',variant:'danger',confirmLabel:'삭제',cancelLabel:'취소'}))return;if(get().chatId!==opened.chatId||get().epoch!==opened.epoch){ui.note('확인 창을 연 뒤 채팅이 바뀌어 지우지 않았습니다.');return;}sceneSend('sceneDelete',{id:x.id});},act,'mmc-danger');
+   if(x.kind==='scene')button('삭제',async()=>{const at=await confirmed({title:'장면 삭제',message:x.label+' 기록을 지우고 로어북 엔트리도 지웁니다. 되돌릴 수 없습니다.',variant:'danger',confirmLabel:'삭제',cancelLabel:'취소'},'지우지');if(at)sceneSend('sceneDelete',{id:x.id,sceneRevision:at.revision});},act,'mmc-danger');
   }
  }
  function book(parent,c){
@@ -128,7 +140,7 @@ export function createSceneView({el,button,card,field,check,send,get,ui,confirm,
   const act=el('div',undefined,box,'lv-actions');
   button('다시 동기화',()=>sceneSend('sceneSync'),act).dataset.sceneSync='true';
   if(c.book)button(s.inject?'연결 해제':'다시 연결',()=>sceneSend('sceneBook',{action:s.inject?'detach':'attach'}),act);
-  if(c.book)button('책 삭제',async()=>{const opened=get();if(!await confirm({title:'장면록 책 삭제',message:'「'+c.book.name+'」 로어북을 지웁니다. 보관함의 장면 기록은 남고 주입은 꺼집니다.',variant:'danger',confirmLabel:'책 삭제',cancelLabel:'취소'}))return;if(get().chatId!==opened.chatId||get().epoch!==opened.epoch){ui.note('확인 창을 연 뒤 채팅이 바뀌어 지우지 않았습니다.');return;}sceneSend('sceneBook',{action:'delete',confirm:true});},act,'mmc-danger');
+  if(c.book)button('책 삭제',async()=>{const at=await confirmed({title:'장면록 책 삭제',message:'「'+c.book.name+'」 로어북을 지웁니다. 보관함의 장면 기록은 남고 주입은 꺼지며, 이 확장이 숨긴 원문은 다시 보입니다.',variant:'danger',confirmLabel:'책 삭제',cancelLabel:'취소'},'책을 지우지');if(at)sceneSend('sceneBook',{action:'delete',confirm:true,bookRef:at.book,sceneRevision:at.revision});},act,'mmc-danger');
   const more=el('details',undefined,box);el('summary','장면록 설정',more);
   const draft=(ui.sceneSettings||={});
   const num=(label,key,unit)=>{const l=el('label',undefined,more,'lv-num');el('span',label,l);number(l,label,draft[key]??String(s[key]),v=>draft[key]=v);el('span',unit+' ('+SCENE_LIMITS[key].join('–')+')',l);};
@@ -144,7 +156,7 @@ export function createSceneView({el,button,card,field,check,send,get,ui,confirm,
    for(const k of ['budget','scanDepth','protectRecent','maxBody']){const v=strictInt(draft[k]??String(s[k])),[lo,hi]=SCENE_LIMITS[k];if(!Number.isSafeInteger(v)||v<lo||v>hi){ui.note('숫자는 '+lo+'~'+hi+' 사이 정수로 입력하세요.');return;}out[k]=v;}
    sceneSend('sceneSettings',out,reply=>{if(reply.ok)ui.sceneSettings={};return false;});
   },more,'mmc-sm').dataset.sceneSettings='save';
-  el('small','상시: 가장 최근 장 1개와 장면 3개를 예산 안에서 늘 넣습니다. 나머지는 키워드가 최근 메시지에 나올 때만 들어갑니다. 원문 자동 숨김은 기본 꺼짐이며, 켜면 상시로 들어가는 장면이 덮은 원문만 숨기고(최근 메시지는 숨기지 않음) 이 확장이 숨긴 것만 되돌립니다.',more,'mmc-muted');
+  el('small','상시: 가장 최근 장 1개와 장면 3개를 예산 안에서 늘 넣습니다. 나머지는 키워드가 최근 메시지에 나올 때만 들어갑니다. 원문 자동 숨김은 기본 꺼짐이며, 켜면 상시로 들어가는 장면이 덮은 원문만 숨기고(최근 메시지는 숨기지 않음) 이 확장이 숨긴 것만 되돌립니다. 로어북 연결을 해제하거나 책을 지우면 숨긴 원문을 다시 보이게 하고, 연결되어 있지 않은 동안에는 새로 숨기지 않습니다.',more,'mmc-muted');
  }
  function section(main,chatId){
   if(!chatId)return;

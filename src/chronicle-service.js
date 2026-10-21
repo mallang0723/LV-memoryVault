@@ -1,5 +1,5 @@
 import {safe,clone,fingerprint,selectSource,sourceInput,sentStamp,spanLabel,strictInt,MAX_INPUT_CHARS} from './core.js';
-import {SCENE_PROMPT,SCENE_MERGE_PROMPT,SCENE_PROMPT_VERSION,SCENE_MERGE_VERSION,SCENE_BOOK_PREFIX,SCENE_BOOK_KEY,SCENE_EXT,SCENE_MAX_CANDIDATES,SCENE_LIMITS,SCENE_SOURCE_LABEL,scenePrompt,sceneEmpty,sceneClean,sceneSettings,sceneLabel,sceneTokens,sceneBodyIssue,sceneKeywords,sceneParse,sceneEvaluate,sceneFrontier,scenePlan,sceneEntry,sceneValidateMerge,sceneJoinRange,sceneApplyMerge,sceneUndoMerge,sceneNextRange,sceneHidePlan,sceneInherit,sceneIdOk} from './chronicle.js';
+import {SCENE_PROMPT,SCENE_MERGE_PROMPT,SCENE_PROMPT_VERSION,SCENE_MERGE_VERSION,SCENE_BOOK_PREFIX,SCENE_BOOK_KEY,SCENE_EXT,SCENE_MAX_CANDIDATES,SCENE_LIMITS,SCENE_SOURCE_LABEL,scenePrompt,sceneEmpty,sceneClean,sceneSettings,sceneLabel,sceneTokens,sceneBodyIssue,sceneKeywords,sceneParse,sceneEvaluate,sceneFrontier,scenePlan,sceneEntry,sceneValidateMerge,sceneJoinRange,sceneApplyMerge,sceneUndoMerge,sceneNextRange,sceneHidePlan,sceneInherit,sceneIdOk,sceneRestricted} from './chronicle.js';
 // Scene chronicle service: chats/<id>/chronicle.json is the record, one chat-only world
 // book mirrors it. Every handler below runs inside the per-chat queue of service.run()
 // after the chat ownership check, so book lookup/creation for one chat is never
@@ -144,8 +144,11 @@ export function createChronicle(api,{gate,rawTarget}){
   // Attach while enabled; detach when the user turned the book off. Branch copies of
   // another chat's book are dropped either way.
   if(report.permission){const r=await attach(chatId,user,s.book?.id||null,!!s.book&&s.settings.inject);report.foreign=r.foreign;report.attached=r.attached;}
-  // Hiding: opt-in, frozen while LumiBooks manages the same chat.
-  const locked=!!chat?.metadata?.lumibooks_book_id,hp=sceneHidePlan(s,p,msgs,{locked});
+  // Hiding: opt-in, only while our entries actually reach the prompt (injection on,
+  // our book attached); frozen while LumiBooks manages the same chat. Detached,
+  // deleted or turned off: every message we hid comes back.
+  const injected=report.permission&&s.settings.inject&&!!s.book&&report.attached===true;
+  const locked=!!chat?.metadata?.lumibooks_book_id,hp=sceneHidePlan(s,p,msgs,{locked,injected});
   const ours=new Set(hp.hiddenByUs);
   if((hp.hide.length||hp.unhide.length)&&typeof api.chat.setMessagesHidden==='function'){
    gate('chat_mutation');if(!await api.chats.get(chatId,user))throw Error('채팅 소유권 확인 실패');
@@ -168,7 +171,7 @@ export function createChronicle(api,{gate,rawTarget}){
    ...(candidate?{replaces:x.replaces||''}:{state:evaluation?.get(x.id)?.state||'stale',reason:evaluation?.get(x.id)?.reason||'',mode:p?.plan.get(x.id)||'none',parentId:x.parentId,children:(x.children||[]).map(c=>c.id),entry:!!x.entry,entryEdited:!!x.entryEdited})});
   const ids=Array.isArray(chat?.metadata?.chat_world_book_ids)?chat.metadata.chat_world_book_ids:[];
   return {revision:s.revision,nodes:s.nodes.map(x=>row(x,false)),candidates:s.candidates.map(x=>row(x,true)),settings:s.settings,
-   book:s.book?{name:s.book.name,attached:ids.includes(s.book.id)}:null,constantTokens:p?.constantTokens||0,
+   book:s.book?{name:s.book.name,ref:s.book.id,attached:ids.includes(s.book.id)}:null,constantTokens:p?.constantTokens||0,
    permission:has('world_books'),lumibooks:!!chat?.metadata?.lumibooks_book_id,branch:!!s.branchFrom,hidden:s.hiddenByUs.length,
    next:Number.isSafeInteger(total)?sceneNextRange(s,total):null,total,...(report?{report:{...report,errors:report.errors.slice(0,3)}}:{})};
  }
@@ -265,10 +268,14 @@ export function createChronicle(api,{gate,rawTarget}){
    if(!['public','unknown','secret'].includes(scope)||(isCandidate&&scope==='public'))throw Error('공개 범위 형식 오류');
    if(scope==='public'&&x.scope!=='public'&&r.confirmPublic!==true)throw Error('공개 범위 확대: 명시 확인 필요');
    const content=body!==x.body||String(r.title??x.title)!==x.title||JSON.stringify(r.keywords===undefined?x.keywords:sceneKeywords(r.keywords))!==JSON.stringify(x.keywords);
+   // A scope change is a change the chapters above depend on too: narrowing it must
+   // withdraw every chapter that carries this text (they become stale and lose their
+   // entries), so it bumps the revision like an edited body.
+   const rescoped=scope!==x.scope,narrowed=rescoped&&x.scope==='public';
    Object.assign(x,{body,title:String(r.title??x.title).replace(/\s+/g,' ').trim().slice(0,40),keywords:r.keywords===undefined?x.keywords:sceneKeywords(r.keywords),scope});
-   if(!isCandidate&&content)x.revision++;
+   if(!isCandidate&&(content||rescoped))x.revision++;
    if(!isCandidate&&content)force=[x.id];
-   notice=sceneLabel(x)+' 저장'+(!isCandidate&&content?' · 이 장면을 담은 장은 갱신 필요로 바뀝니다':'');sync=!isCandidate;
+   notice=sceneLabel(x)+' 저장'+(!isCandidate&&narrowed?' · 로어북에서 빼고, 이 장면을 담은 장도 모두 주입을 멈춥니다':!isCandidate&&(content||rescoped)?' · 이 장면을 담은 장은 갱신 필요로 바뀝니다':'');sync=!isCandidate;
   }else if(r.type==='sceneDelete'){
    const x=findNode(s,r.id);if(x.kind!=='scene')throw Error('장은 지우지 않고 합치기 취소로 풉니다.');if(x.parentId&&s.nodes.some(y=>y.id===x.parentId&&y.status!=='undone'))throw Error('장에 들어간 장면은 먼저 합치기를 취소하세요.');
    s.nodes=s.nodes.filter(y=>y!==x);notice=sceneLabel(x)+' 삭제 · 로어북 엔트리도 지웁니다';
@@ -279,11 +286,13 @@ export function createChronicle(api,{gate,rawTarget}){
    for(const k of Object.keys(SCENE_LIMITS))num(k);
    if(r.keywords!==undefined)next.keywords=r.keywords===true;
    if(r.autoHide!==undefined){if(r.autoHide===true&&!s.settings.autoHide&&chat?.metadata?.lumibooks_book_id)throw Error('이 채팅에서 LumiBooks를 쓰고 있어 원문 자동 숨김을 켤 수 없습니다(서로 숨김을 풀어 버립니다).');next.autoHide=r.autoHide===true;}
-   s.settings=sceneSettings(next);notice='장면록 설정 저장';
+   s.settings=sceneSettings(next);notice='장면록 설정 저장'+(s.settings.autoHide&&!s.settings.inject?' · 로어북 연결이 꺼져 있어 원문을 숨기지 않습니다(다시 연결하면 숨깁니다)':'');
   }else if(r.type==='sceneBook'){
    if(r.action==='attach'||r.action==='detach'){s.settings={...s.settings,inject:r.action==='attach'};notice=r.action==='attach'?'장면록 로어북을 이 채팅에 연결합니다':'장면록 로어북 연결 해제 · 장면록은 주입되지 않습니다(기록은 그대로)';}
    else if(r.action==='delete'){
     if(r.confirm!==true)throw Error('책 삭제 명시 확인 필요');
+    // Bound to the book the confirmation named (the pointer can move without a revision change).
+    if((s.book?.id||'')!==(typeof r.bookRef==='string'?r.bookRef:''))throw Error('확인한 장면록 책이 그사이 바뀌었습니다. 새로고침 후 다시 하세요.');
     if(s.book){let b=null;try{b=await api.world_books.get(s.book.id,user);}catch{}
      if(b&&sameChat(b,chatId)){await attach(chatId,user,s.book.id,false);await api.world_books.delete(s.book.id,user);owners.delete(s.book.id);}}
     s.book=null;s.settings={...s.settings,inject:false};for(const x of s.nodes){x.entry=null;x.entryEdited=false;}
@@ -307,8 +316,9 @@ export function createChronicle(api,{gate,rawTarget}){
   return {chronicle:view(s,evaluation,p,{total:all.length,chat:fresh,report}),...(notice?{notice}:{})};
  }
  // World-info interceptor (fail-safe behind the event-driven sync): any entry this
- // extension wrote is turned off for this prompt unless it belongs to this chat's own
- // book and its node is approved, public and unchanged against the messages the host
+ // extension wrote is turned off for this prompt unless injection is on, it belongs to
+ // this chat's own book and its node is approved, public (every node below it public
+ // too) and unchanged against the messages the host
  // is assembling from. Errors turn our entries off; other entries are never touched.
  async function worldInfoGuard(ctx){
   const ours=(Array.isArray(ctx?.entries)?ctx.entries:[]).filter(e=>e?.extensions&&typeof e.extensions==='object'&&e.extensions[SCENE_EXT]);
@@ -317,10 +327,12 @@ export function createChronicle(api,{gate,rawTarget}){
   try{
    const user=ctx.userId,chatId=ctx.chatId;
    if(!sceneIdOk(chatId)||typeof user!=='string'||!user||!await api.chats.get(chatId,user))return {disabled:off};
-   const s=await readStored(chatId,user);if(!s?.book)return {disabled:off};
-   const msgs=await digests(Array.isArray(ctx.messages)?ctx.messages:[]),evaluation=sceneEvaluate(s,msgs),plan=scenePlan(s,evaluation).plan;
+   const s=await readStored(chatId,user);if(!s?.book||!s.settings.inject)return {disabled:off};
+   const msgs=await digests(Array.isArray(ctx.messages)?ctx.messages:[]),evaluation=sceneEvaluate(s,msgs),plan=scenePlan(s,evaluation).plan,restricted=sceneRestricted(s);
+   // Revision alone is not enough: a node narrowed below public at any depth withdraws
+   // every chapter above it.
    const disabled=ours.filter(e=>{const ext=e.extensions[SCENE_EXT],x=s.nodes.find(y=>y.id===ext?.nodeId);
-    return !(ext.chatId===chatId&&e.world_book_id===s.book.id&&x&&x.entry?.id===e.id&&x.revision===ext.revision&&evaluation.get(x.id)?.state==='approved'&&['constant','keyword'].includes(plan.get(x.id)));}).map(e=>e.id);
+    return !(ext.chatId===chatId&&e.world_book_id===s.book.id&&x&&x.scope==='public'&&!restricted.has(x.id)&&x.entry?.id===e.id&&x.revision===ext.revision&&evaluation.get(x.id)?.state==='approved'&&['constant','keyword'].includes(plan.get(x.id)));}).map(e=>e.id);
    return disabled.length?{disabled}:undefined;
   }catch{return {disabled:off};}
  }

@@ -129,7 +129,10 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
  const readAuto=async(chatId,user)=>{try{if(!await api.userStorage.exists(autoPath(chatId),user))return autoOff();return cleanAuto(safe(await api.userStorage.getJson(autoPath(chatId),{userId:user})));}catch{return autoOff();}};
  const writeAuto=(chatId,user,value)=>api.userStorage.setJson(autoPath(chatId),safe(value),{userId:user});
  // An attempt file that exists but cannot be read counts as an open attempt (no end known).
+ // A receipt marked sent:false (closed before the call because the settings changed
+ // while it was being written) is no attempt at all.
  const readAttempt=async(chatId,user)=>{let v;try{if(!await api.userStorage.exists(attemptPath(chatId),user))return null;v=safe(await api.userStorage.getJson(attemptPath(chatId),{userId:user}));}catch{return {id:'unreadable',end:null};}
+  if(v&&validId(v.id)&&v.sent===false)return null;
   return v&&validId(v.id)?{id:v.id,gen:validId(v.gen)?v.gen:null,end:cleanMarker(v.end),at:Number.isFinite(v.at)?v.at:0}:{id:'unreadable',end:null};};
  // Open: not matched by a stored outcome, and neither the stored position nor saved
  // automatic candidates reach the end of its span.
@@ -150,7 +153,7 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
  async function run(request,user,internal){
   if(!validUser(user))throw Error('인증된 사용자 문맥 없음');
   const r=safe(request);gate('chats');
-  if(['autoPrepare','autoFail','autoPropose','healthChanges'].includes(r?.type)&&!internal)throw Error('알 수 없는 작업');
+  if(['autoPrepare','autoFail','autoPropose','autoUnsent','healthChanges'].includes(r?.type)&&!internal)throw Error('알 수 없는 작업');
   // `user` is the host-authenticated identity (frontend message routing or
   // interceptor context), never a payload field. Every host call below passes it,
   // so operator-scoped installs (explicit userId required) and user-scoped
@@ -164,6 +167,9 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
    gate('chats');const chat=await api.chats.get(chatId,user);if(!chat)throw Error('채팅 소유권 확인 실패');
    const path='chats/'+chatId+'/data.json';
    if(r.type==='autoPrepare')return autoPrepare(chatId,user,chat,key);
+   // A receipt whose call never happened, closed through auto.json when it could not
+   // be marked unsent itself (inside the queue, so it never races a settings save).
+   if(r.type==='autoUnsent'){const a=await readAuto(chatId,user);await settleAttempt(chatId,user,a,internal);return {skip:'unsent'};}
    if(r.type==='autoFail'){
     const a=await readAuto(chatId,user);if(!a.enabled)return {skip:'off'};
     // A job from an older settings generation (turned off, or off and on again) never
@@ -428,11 +434,21 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
     // Right before submitting: the settings this job was prepared under must still be
     // current (on, same generation, same mode and connection). Turned off or changed
     // while the connection lookup was pending means nothing is sent.
-    const now=await readAuto(chatId,user);
-    if(!now.enabled||stale(key,now,x)||now.mode!==x.mode||now.connection!==x.connection||paused.has(key))return {skip:now.enabled?'stale':'off'};
+    const current=async()=>{const now=await readAuto(chatId,user);return !now.enabled||stale(key,now,x)||now.mode!==x.mode||now.connection!==x.connection||paused.has(key)?{skip:now.enabled?'stale':'off'}:null;};
+    let changed=await current();if(changed)return changed;
     // Receipt right before sending: if it cannot be stored, nothing is sent.
     x.attempt=crypto.randomUUID();attempting.set(key,x.attempt);
-    try{await api.userStorage.setJson(attemptPath(chatId),safe({id:x.attempt,gen:x.gen,end:x.end,at:Date.now()}),{userId:user});}catch{return {skip:'attempt',error:'자동 분석 시도 기록을 저장하지 못해 이번에는 보내지 않았습니다.'};}
+    const receipt={id:x.attempt,gen:x.gen,end:x.end,at:Date.now()};
+    try{await api.userStorage.setJson(attemptPath(chatId),safe(receipt),{userId:user});}catch{return {skip:'attempt',error:'자동 분석 시도 기록을 저장하지 못해 이번에는 보내지 않았습니다.'};}
+    // Writing the receipt is a wait of its own: settings turned off (or off and on)
+    // meanwhile mean nothing is sent. The receipt is closed as never sent so the chat
+    // is not paused on it.
+    changed=await current();
+    if(changed){
+     try{await api.userStorage.setJson(attemptPath(chatId),safe({...receipt,sent:false}),{userId:user});}
+     catch{try{await run({type:'autoUnsent',chatId},user,{attempt:x.attempt});}catch{}}
+     return changed;
+    }
     gate('generation');const generated=await api.generate[x.mode]({messages:[{role:'system',content:x.system},{role:'user',content:x.input}],connection_id:x.connection,userId:user,...target});
     const normalized=normalizeCandidates(parseCandidates(generated?.content));
     if(normalized.total&&!normalized.items.length)throw Error('모델 응답의 후보 '+normalized.total+'개가 모두 형식 오류입니다(첫 항목: '+normalized.skipped[0].reason+').');

@@ -248,9 +248,12 @@ test('auto-hide: off by default; on hides constant-covered turns except the last
  assert.deepEqual(hidden(),['m3']);assert.equal(v.hidden,0);
 });
 test('auto-hide plan never hides inside the protected tail, even with a protect window larger than the chat',async()=>{
- const {s,msgs}=await stateWith([[1,10]]);s.settings.autoHide=true;s.settings.protectRecent=80;
- const p=scenePlan(s,sceneEvaluate(s,msgs));assert.deepEqual(sceneHidePlan(s,p,msgs).hide,[]);
- s.settings.protectRecent=10;const plan=sceneHidePlan(s,scenePlan(s,sceneEvaluate(s,msgs)),msgs.slice(0,15));assert.deepEqual(plan.hide,['m1','m2','m3','m4','m5']);
+ const {s,msgs}=await stateWith([[1,10]]);s.settings.autoHide=true;s.settings.protectRecent=80;s.nodes[0].entry={id:'e1',hash:''};
+ const p=scenePlan(s,sceneEvaluate(s,msgs));assert.deepEqual(sceneHidePlan(s,p,msgs,{injected:true}).hide,[]);
+ s.settings.protectRecent=10;const plan=sceneHidePlan(s,scenePlan(s,sceneEvaluate(s,msgs)),msgs.slice(0,15),{injected:true});assert.deepEqual(plan.hide,['m1','m2','m3','m4','m5']);
+ // Not injected (book detached or deleted), or no entry written for the node: nothing is hidden.
+ assert.deepEqual(sceneHidePlan(s,scenePlan(s,sceneEvaluate(s,msgs)),msgs.slice(0,15)).hide,[]);
+ s.nodes[0].entry=null;assert.deepEqual(sceneHidePlan(s,scenePlan(s,sceneEvaluate(s,msgs)),msgs.slice(0,15),{injected:true}).hide,[]);
 });
 // ---- LumiBooks, permission, branch, world-info guard -------------------------------
 test('LumiBooks in the same chat: warning and auto-hide locked (no hide calls)',async()=>{

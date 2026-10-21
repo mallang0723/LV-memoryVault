@@ -141,8 +141,18 @@ function sceneLocate(range,pos,msgs){
  for(let k=0;k<at.length;k++){if(k&&at[k]!==at[k-1]+1)return null;if(msgs[at[k]].digest!==range.fps[k])return null;}
  return {startIndex:at[0],endIndex:at.at(-1)};
 }
+// Public chapters holding a node that is not public at any depth (a child narrowed to
+// unknown/secret after the merge). Such a chapter carries text that may no longer reach
+// the world book, so it is stale and has no entry at all, whatever its revisions say.
+export function sceneRestricted(state){
+ const nodes=new Map(state.nodes.map(x=>[x.id,x])),memo=new Map();
+ const below=(x,seen)=>{if(memo.has(x.id))return memo.get(x.id);if(seen.has(x.id))return false;seen.add(x.id);
+  const hit=x.kind==='chapter'&&(x.children||[]).some(c=>{const n=nodes.get(c.id);return !n||!sceneWritable(n)||below(n,seen);});
+  memo.set(x.id,hit);return hit;};
+ return new Set(state.nodes.filter(x=>sceneWritable(x)&&below(x,new Set())).map(x=>x.id));
+}
 export function sceneEvaluate(state,msgs){
- const nodes=new Map(state.nodes.map(x=>[x.id,x])),pos=new Map(msgs.map((m,i)=>[m.id,i]));
+ const nodes=new Map(state.nodes.map(x=>[x.id,x])),pos=new Map(msgs.map((m,i)=>[m.id,i])),restricted=sceneRestricted(state);
  const forced=new Map();
  // Graph integrity: every child of a live chapter points back to it; every parentId
  // names a live chapter that lists the node. Offenders are held, never released.
@@ -163,7 +173,7 @@ export function sceneEvaluate(state,msgs){
     const contiguous=located&&locs.every((l,i)=>!i||l.startIndex===locs[i-1].endIndex+1);
     const loc=located?{startIndex:locs[0].startIndex,endIndex:locs.at(-1).endIndex}:null;
     const bad=kids.some(k=>!k.n||k.n.revision!==k.c.revision||!['approved'].includes(k.r.state));
-    out=forced.has(id)?{state:'held',reason:forced.get(id),loc}:x.status==='held'?{state:'held',reason:'held',loc}:located&&!contiguous?{state:'held',reason:'gap',loc}:bad||!located?{state:'stale',reason:'child',loc}:{state:'approved',loc};}
+    out=forced.has(id)?{state:'held',reason:forced.get(id),loc}:x.status==='held'?{state:'held',reason:'held',loc}:located&&!contiguous?{state:'held',reason:'gap',loc}:restricted.has(id)?{state:'stale',reason:'scope',loc}:bad||!located?{state:'stale',reason:'child',loc}:{state:'approved',loc};}
    visiting.delete(id);memo.set(id,out);return out;};
   const result=new Map();
   for(const x of nodes.values()){const base=own(x.id);let st=base.state;const p=x.parentId&&nodes.get(x.parentId);
@@ -186,10 +196,10 @@ export function sceneFrontier(state,evaluation){
 // Only public scenes reach the world book; unknown / secret / character stay internal.
 export const sceneWritable=x=>x.scope==='public';
 // Activation plan per node: 'constant' | 'keyword' | 'off' (entry kept, disabled) |
-// 'none' (no entry at all: not public, or undone).
+// 'none' (no entry at all: not public, holding a non-public node, or undone).
 export function scenePlan(state,evaluation){
- const s=state.settings,plan=new Map();
- const injectable=sceneFrontier(state,evaluation).filter(x=>evaluation.get(x.id)?.state==='approved'&&sceneWritable(x));
+ const s=state.settings,plan=new Map(),restricted=sceneRestricted(state);
+ const injectable=sceneFrontier(state,evaluation).filter(x=>evaluation.get(x.id)?.state==='approved'&&sceneWritable(x)&&!restricted.has(x.id));
  const chapters=injectable.filter(x=>x.kind==='chapter').slice(-s.constantChapters),scenes=injectable.filter(x=>x.kind==='scene').slice(-s.constantScenes);
  // Oldest constants leave first until the estimate fits the budget.
  const constant=injectable.filter(x=>chapters.includes(x)||scenes.includes(x));
@@ -198,7 +208,7 @@ export function scenePlan(state,evaluation){
  const on=new Set(constant.map(x=>x.id));
  for(const x of state.nodes){
   const ev=evaluation.get(x.id);
-  if(!sceneWritable(x)||x.status==='undone')plan.set(x.id,'none');
+  if(!sceneWritable(x)||x.status==='undone'||restricted.has(x.id))plan.set(x.id,'none');
   else if(ev?.state==='approved'&&on.has(x.id))plan.set(x.id,'constant');
   else if(ev?.state==='approved'&&s.keywords&&x.keywords.length)plan.set(x.id,'keyword');
   else plan.set(x.id,'off');
@@ -262,15 +272,19 @@ export function sceneNextRange(state,total,len=20){
 // Auto-hide (opt-in). Only messages covered by constant (always injected) nodes are
 // hidden, never the last `protectRecent`; only messages this extension hid are ever
 // unhidden. A message the user unhid after we hid it is left visible from then on.
+// Hiding needs the summaries to actually reach the prompt: `injected` (injection on and
+// our book attached to the chat) and an entry written for the node. Otherwise nothing
+// new is hidden and every message we hid comes back (book detached or deleted).
 // msgs: [{id,hidden}] in host order.
-export function sceneHidePlan(state,plan,msgs,{locked=false}={}){
+export function sceneHidePlan(state,plan,msgs,{locked=false,injected=false}={}){
  const s=state.settings,ours=new Set(state.hiddenByUs),keep=new Set(state.keepVisible),byId=new Map(msgs.map((m,i)=>[m.id,{...m,index:i}]));
- // Frozen while LumiBooks is present, except that turning auto-hide off still returns
- // every message we hid.
- if(locked&&s.autoHide)return {hide:[],unhide:[],hiddenByUs:[...ours].filter(id=>byId.has(id)),keepVisible:[...keep].filter(id=>byId.has(id)),locked:true};
+ const active=s.autoHide&&injected===true;
+ // Frozen while LumiBooks is present, except that turning auto-hide off (or injection
+ // ending) still returns every message we hid.
+ if(locked&&active)return {hide:[],unhide:[],hiddenByUs:[...ours].filter(id=>byId.has(id)),keepVisible:[...keep].filter(id=>byId.has(id)),locked:true};
  const target=new Set();
- if(s.autoHide){const limit=msgs.length-s.protectRecent;
-  for(const x of state.nodes)if(plan.plan.get(x.id)==='constant')for(const id of x.range.ids){const m=byId.get(id);if(m&&m.index<limit)target.add(id);}}
+ if(active){const limit=msgs.length-s.protectRecent;
+  for(const x of state.nodes)if(plan.plan.get(x.id)==='constant'&&x.entry)for(const id of x.range.ids){const m=byId.get(id);if(m&&m.index<limit)target.add(id);}}
  const hide=[],unhide=[],next=new Set();
  for(const id of ours){const m=byId.get(id);if(!m)continue;
   if(!m.hidden){keep.add(id);continue;}// unhidden by someone else: respected, never re-hidden
