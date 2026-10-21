@@ -1,4 +1,5 @@
 import {vaultStyle} from './vault-style.js';
+import {createSceneView} from './scene-view.js';
 import {publicItems,selectSafeCandidates,candidateRisks,injectionText,MAX_INPUT_CHARS,MAX_RANGES,DEFAULT_RECENT,sourceSummary,resolveScope,nextRange,spanLabel,rangeStatus,localTimeZone,diagnose,sameBase,healthEligible,strictInt,layerNames,LOOM_CAP} from './core.js';
 const tabs=[['overview','개요'],['promises','약속'],['flows','진행 흐름'],['anchors','기억 앵커'],['scenes','장면 기억'],['elements','요소 기억'],['wiki','이야기 위키']];
 const names=Object.fromEntries(tabs);
@@ -93,7 +94,8 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
  const select=(label,options,parent,value)=>{const x=field(label,'select',parent);for(const [id,name] of options){const o=el('option',name,x);o.value=id;if(id===value)o.setAttribute('selected','');}return x;};
  // Entering the analysis view re-asks the message count (numbers only, no bodies) so a
  // chat that grew since the last visit is not blocked by a stale total.
- const go=(tab,open)=>{if(tab==='analysis')ui.countAsked=null;ui.tab=tab;ui.editor=null;ui.filter='all';ui.detail=open?'list:'+open:null;ui.limits={};ui.queries={};ui.selected.clear();render();};
+ const sceneView=createSceneView({el,button,card,field,check,send,get,ui,confirm,rerender:()=>render()});
+ const go=(tab,open)=>{if(tab==='analysis')ui.countAsked=null;if(tab==='scenes')ui.sceneAsked=null;ui.tab=tab;ui.editor=null;ui.filter='all';ui.detail=open?'list:'+open:null;ui.limits={};ui.queries={};ui.selected.clear();render();};
  const title=x=>clip(x.title||x.text.split('\n')[0])||'제목 없는 기억';
  const matches=(x,q)=>!q||(title(x)+' '+x.text).toLowerCase().includes(q.toLowerCase());
  const explain=x=>[hasLifecycle(x.layer)?(x.status==='completed'?'완료':x.status==='cancelled'?'취소':'진행 중'):['completed','cancelled'].includes(x.status)?'주입 제외 (이전 상태)':'',x.scope==='public'?'공개':x.scope==='secret'?'비밀':x.scope==='character'?'인물 제한':'비공개 (주입 안 함)',x.hold?'보류':'',x.branchHold?'분기 보류':'',x.importedScope?'가져온 범위 보류':'',x.review?'근거 재검토':'',x.locked?'잠금':''].filter(Boolean).join(' · ');
@@ -321,6 +323,7 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
   if(x.knownBy?.length)el('p','인물 제한이 있어 주입하지 않습니다. 인물 매핑은 아직 지원하지 않습니다.',evidence,'lv-warning');
  }
  function collection(main,state){
+  if(ui.tab==='scenes')sceneView.section(main,get().chatId);
   const left=card(main);
   const bar=el('div',undefined,left,'lv-toolbar');button('직접 추가',()=>openEditor(),bar,'mmc-primary');button('원문에서 정리',()=>go('analysis'),bar);button('검토 대기',()=>go('overview'),bar);
   const filters=el('div',undefined,left,'mmc-seg');for(const [id,name] of hasLifecycle(ui.tab)?[['active','진행 중'],['hold','보류'],['done','완료'],['all','전체']]:[['hold','보류'],['all','전체']])button(name,()=>{ui.filter=id;ui.limits.list=PAGE;ui.selected.clear();render();},filters,'mmc-filter'+(ui.filter===id?' is-active':''));
@@ -329,7 +332,8 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
   const relabel=listBulk(left,state,rows);
   searchable(left,'list','기억 검색',rows,(x,list)=>itemRow(x,list,state,{candidate:state.candidates.includes(x)}),'아직 이 종류의 기억이 없어요. 직접 추가하거나 원문에서 정리해 보세요.',relabel);
   if(ui.tab==='anchors')el('p','항상 기억할 공개 앵커만 지원합니다. 원작의 키워드 호출·주입 예산은 아직 지원하지 않습니다.',main,'lv-warning');
-  if(ui.tab==='scenes'||ui.tab==='flows'||ui.tab==='elements'||ui.tab==='wiki')el('p','이 버전은 텍스트 중심 편집입니다. 원작의 구조화 장면·흐름별 이력·요소 검색 조건·위키 자동 갱신은 아직 지원하지 않습니다.',main,'lv-warning');
+  if(ui.tab==='scenes')el('p','아래 목록은 직접 추가하거나 원문 분석으로 만든 장면 기억이며 지금처럼 생성 직전 기억 주입으로 들어갑니다. 위 장면록(구간 기록)은 이 채팅 전용 로어북으로 따로 들어가며 두 경로는 겹치지 않습니다.',main,'lv-warning');
+  if(ui.tab==='flows'||ui.tab==='elements'||ui.tab==='wiki')el('p','이 버전은 텍스트 중심 편집입니다. 원작의 흐름별 이력·요소 검색 조건·위키 자동 갱신은 아직 지원하지 않습니다.',main,'lv-warning');
  }
  function editor(main,state){
   const draft=ui.editor,c=card(main,'기억 편집');
@@ -469,15 +473,15 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
   const transfer=field('내보내기 가져오기 JSON','textarea',c,ui.transfer||'');transfer.dataset.transfer='true';transfer.oninput=()=>ui.transfer=transfer.value;
   button('JSON 내보내기',()=>send('export'),c);const confirm=check('현재 기억 교체 확인',c);
   button('JSON 가져오기 (현재 항목 교체·모두 보류)',()=>{if(!confirm.checked){ui.note('현재 기억 교체 확인이 필요합니다.');return;}try{send('import',{data:JSON.parse(transfer.value)});}catch{ui.note('JSON 형식 오류');}},c);
-  const info=card(main,'이식 범위와 권한');el('p','Lumiverse 테마를 따릅니다. chats·chat_mutation은 소유권/원문 조회, generation은 사용자가 누른 분석·기억 점검과 켜 둔 자동 분석, interceptor는 생성 직전 기억 주입에 사용합니다. 메시지는 수정하지 않습니다.',info);
-  el('p','인물 매핑·주입 예산·키워드 조건·흐름별 이력·구조화 장면·원본 데이터 변환·로어북 동기화·Keeper는 지원하지 않습니다. 가짜 설정은 표시하지 않습니다.',info,'lv-warning');
-  el('p','영구 책을 만들지 않습니다. 과거 수동 내보내기 책은 호스트에서 직접 연결 해제·삭제하세요. 확장 비활성화는 데이터를 남깁니다. 제거 전 JSON을 내보내세요.',info);
+  const info=card(main,'이식 범위와 권한');el('p','Lumiverse 테마를 따릅니다. chats·chat_mutation은 소유권/원문 조회, generation은 사용자가 누른 분석·기억 점검·장면 기록과 켜 둔 자동 분석, interceptor는 생성 직전 기억 주입에 사용합니다. world_books는 장면록 탭에서 승인한 장면을 이 채팅 전용 로어북 하나에 쓰는 데만 씁니다. 메시지 내용은 수정하지 않으며, 장면록의 원문 자동 숨김을 직접 켠 경우에만 숨김 표시를 바꿉니다.',info);
+  el('p','인물 매핑·흐름별 이력·원본 데이터 변환·Keeper는 지원하지 않습니다. 가짜 설정은 표시하지 않습니다.',info,'lv-warning');
+  el('p','장면록 로어북은 확장을 끄거나 지워도 남습니다. 장면 기억 탭의 장면록 설정에서 연결 해제·책 삭제를 할 수 있습니다. 과거 수동 내보내기 책은 호스트에서 직접 연결 해제·삭제하세요. 확장 비활성화는 데이터를 남깁니다. 제거 전 JSON을 내보내세요.',info);
  }
  function render(){
   // The drawer scrolls the whole panel; rebuild synchronously with no layout reads so its scroll position is kept.
   const {state,chatId,recovery}=get();root.replaceChildren();root.className='memory-cabinet';root.id='mmc-root-v1';el('style',vaultStyle+'\n'+theme);
   const overlay=el('div',undefined,root,'mmc-overlay'),shell=el('section',undefined,overlay,'mmc-shell');
-  const bar=el('header',undefined,shell,'mmc-bar'),brand=el('div',undefined,bar,'mmc-brand');el('span','▤',brand,'mmc-brand-mark');const bt=el('span',undefined,brand,'mmc-brand-text');el('b','기억 보관함',bt);el('small','MEMORY VAULT · 0.3 BETA',bt);
+  const bar=el('header',undefined,shell,'mmc-bar'),brand=el('div',undefined,bar,'mmc-brand');el('span','▤',brand,'mmc-brand-mark');const bt=el('span',undefined,brand,'mmc-brand-text');el('b','기억 보관함',bt);el('small','MEMORY VAULT · 0.4 BETA',bt);
   el('span',chatId?'현재 이야기 · 채팅별 보관함':'채팅을 여세요',bar,'mmc-story');
   const actions=el('div',undefined,bar,'mmc-head-actions');button('새로고침',()=>send('load'),actions,'mmc-sm');button('분석',()=>go('analysis'),actions,'mmc-sm');button('설정',()=>go('settings'),actions,'mmc-sm');
   const nav=el('nav',undefined,shell,'mmc-tabs');nav.setAttribute('aria-label','기억 종류');

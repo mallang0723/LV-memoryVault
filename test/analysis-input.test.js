@@ -22,13 +22,13 @@ test('send time stamps use the given time zone, tolerate ms, and fall back to UT
 });
 
 test('analysis instruction carries the date rules and an exact schema example',()=>{
- assert.match(ANALYSIS_PROMPT,/JSON array of memory candidates/);
+ assert.match(ANALYSIS_PROMPT,/기억 후보의 JSON 배열/);
  assert.match(ANALYSIS_PROMPT,/\[전송 YYYY-MM-DD HH:mm\]/);
  assert.match(ANALYSIS_PROMPT,/\[이야기 2일차 저녁\]/);assert.match(ANALYSIS_PROMPT,/\[1923-04-12 밤\]/);
  assert.match(ANALYSIS_PROMPT,/\[기록 2026-10-18 19:10\]/);
- assert.match(ANALYSIS_PROMPT,/어제, 오늘, 내일, 방금/);assert.match(ANALYSIS_PROMPT,/absolute/);
- assert.match(ANALYSIS_PROMPT,/language of the source/);
- const example=JSON.parse(ANALYSIS_PROMPT.match(/e\.g\. (\[\{.*?\}\])/)[1]);
+ assert.match(ANALYSIS_PROMPT,/어제, 오늘, 내일, 방금/);assert.match(ANALYSIS_PROMPT,/절대 날짜·시각/);
+ assert.match(ANALYSIS_PROMPT,/원문과 같은 언어/);
+ const example=JSON.parse(ANALYSIS_PROMPT.match(/예: (\[\{.*?\}\])/)[1]);
  assert.equal(example.length,1);assert.ok(layers.includes(example[0].layer));assert.equal(typeof example[0].text,'string');assert.equal(example[0].scope,'unknown');
  assert.deepEqual(normalizeCandidates(example).items,example);
 });

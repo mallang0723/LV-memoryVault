@@ -50,6 +50,24 @@ export function parseCandidates(content,keys=CANDIDATE_KEYS){
  if(found.list)return found.list;
  throw parseFail(content);
 }
+// One JSON object (scene record / merge responses) with the same boundary rules as
+// parseCandidates: whole-response JSON first, then the first balanced object after
+// leading reasoning or prose. `field` must be present on the object that is accepted.
+export function parseObject(content,field){
+ const raw=String(typeof content==='string'?content:'').trim();
+ const fail=()=>Error('모델 응답을 JSON 객체로 해석하지 못했습니다. 응답이 잘렸거나 형식이 다릅니다. 다시 기록하거나 다른 모델·모드를 고르세요. 응답 앞부분: '+(raw.slice(0,120)||'(빈 응답)')+(raw.length>120?'…':''));
+ const usable=v=>v&&typeof v==='object'&&!Array.isArray(v)&&field in v?v:null;
+ if(content&&typeof content==='object'&&!Array.isArray(content)){const v=usable(safe(content));if(v)return v;throw fail();}
+ if(typeof content!=='string')throw Error('모델 응답 형식 오류: 텍스트 응답이 아닙니다. 다시 시도하세요.');
+ if(new TextEncoder().encode(content).byteLength>MAX_RESPONSE_BYTES)throw Error('크기 제한 2MB');
+ const whole=tryParse(raw);if(whole){const v=usable(whole.value);if(v)return v;throw fail();}
+ const text=raw.replace(/^(\s*<(think|thinking|reasoning)\b[^>]*>[\s\S]*?<\/\2>)+/i,'').trim();
+ for(let i=text.indexOf('{');i>=0;){
+  const end=balancedValue(text,i);if(end<0)break;
+  const r=tryParse(text.slice(i,end)),v=r&&usable(r.value);if(v)return v;
+  i=text.indexOf('{',end);}
+ throw fail();
+}
 // Per-item normalization of model candidates. Common model variations are accepted;
 // anything still unusable is skipped with a reason instead of failing the whole batch.
 const layerAlias=new Map();
@@ -280,11 +298,11 @@ export function sourceInput(messages,zone){
 // no summary, control characters are dropped and block markers removed so it can never
 // close its own block.
 export const LOOM_CAP=8000,LOOM_MIN=200;
-const LOOM_HEAD='\n\n[LUMIVERSE SUMMARY]\n',LOOM_TAIL='\n[/LUMIVERSE SUMMARY]',LOOM_CUT='…(앞부분 생략)\n';
+const LOOM_HEAD='\n\n[루미버스 요약]\n',LOOM_TAIL='\n[/루미버스 요약]',LOOM_CUT='…(앞부분 생략)\n';
 export function loomText(chat){
  const v=chat?.metadata?.loom_summary;
  if(typeof v!=='string'||new TextEncoder().encode(v).byteLength>2000000)return '';
- return v.replace(/\r\n?/g,'\n').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g,'').replace(/\[\s*\/?\s*LUMIVERSE SUMMARY[^\]\n]*\]/gi,'').trim();
+ return v.replace(/\r\n?/g,'\n').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g,'').replace(/\[\s*\/?\s*(?:LUMIVERSE\s+SUMMARY|루미버스\s*요약)[^\]\n]*\]/gi,'').trim();
 }
 export function loomBlock(text,room=Infinity){
  if(!text)return {text:'',chars:0};

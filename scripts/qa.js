@@ -3,6 +3,7 @@ import {mkdirSync,writeFileSync,readFileSync,readdirSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {createService} from '../src/service.js';
 import {classifyCheck} from './run-check.js';
+import {browserQa} from './browser-qa.js';
 const receipts='context/receipts';mkdirSync(receipts,{recursive:true});
 const results=[];
 for(const [name,args] of [['tests',['--test','--test-isolation=none',...readdirSync('test').filter(x=>x.endsWith('.test.js')).sort().map(x=>'test/'+x)]],['build',['scripts/build.js']],['backend-syntax',['--check','dist/backend.js']],['frontend-syntax',['--check','dist/frontend.js']]]){
@@ -18,5 +19,9 @@ const output=readFileSync('dist/backend.js','utf8');
 const forbidden=['process.env','Bun.file','Bun.serve','fetch(','cortex','council','getMemories','node:fs','node:child_process'];
 const matches=forbidden.filter(x=>output.includes(x));
 results.push({name:'limited-static-policy-check (not host scanner)',exitCode:matches.length?1:0,matches});
-writeFileSync(receipts+'/results.json',JSON.stringify({time:new Date().toISOString(),results,stockHostIntegration:'NOT RUN',browserLayout:'NOT RUN; DOM structure only',fakeModelOnly:true},null,2));
+// Headless Chromium at 390px over the built panel with a synthetic backend (skipped,
+// not failed, when no Chromium is installed).
+const browser=browserQa({receipts});
+results.push({name:'browser-390 (headless Chromium, synthetic backend)',exitCode:browser.exitCode,...(browser.skipped?{skipped:browser.reason}:{failures:browser.failures})});
+writeFileSync(receipts+'/results.json',JSON.stringify({time:new Date().toISOString(),results,stockHostIntegration:'NOT RUN',browserLayout:browser.skipped?'NOT RUN; DOM structure only ('+browser.reason+')':'headless Chromium 390px, synthetic backend (scene panel)',fakeModelOnly:true},null,2));
 console.log(JSON.stringify(results));process.exitCode=results.some(r=>r.exitCode!==0)?1:0;

@@ -18,6 +18,15 @@ export function setup(ctx){
   if(reply?.event==='autoAnalysis'&&!reply.requestId){if(alive&&reply.chatId&&reply.chatId===chatId){ui.auto=reply.auto||null;send('load');}return;}
   const p=pending.get(reply.requestId);pending.delete(reply.requestId);
   if(!alive||!p||p.epoch!==epoch)return;
+  // Scene chronicle requests: the chronicle view rides along with the vault state.
+  if(p.scene){
+   if(reply.ok){
+    if(reply.state&&(!state||reply.state.revision>=state.revision)){accepted=Math.max(accepted,p.sequence);chatId=reply.chatId;state=reply.state;recovery=false;}
+    if(reply.chronicle&&reply.chatId===chatId)ui.chronicle={...reply.chronicle,chatId:reply.chatId};
+   }
+   if(!p.after?.(reply)&&!(reply.ok&&p.type==='sceneLoad'&&!reply.notice))ui.status=reply.ok?(reply.notice||'완료'):reply.error;
+   view.render();return;
+  }
   // A reply in a multi-range run records that range and sends the next one first, so
   // a failed or stale reply never stops the run.
   const batch=p.type==='analyze'&&!!p.batch&&ui.batch?.id===p.batch;
@@ -45,6 +54,7 @@ export function setup(ctx){
  const offSwitch=ctx.events.on('CHAT_SWITCHED',p=>{
   epoch++;chatId=p.chatId||null;state=null;recovery=false;pending.clear();
   ui.countAsked=null;ui.analyzing=false;ui.batch=null;ui.selected.clear();ui.editor=null;ui.limits={};ui.queries={};ui.queueLayer='all';ui.detail=null;ui.transfer='';ui.status='';ui.injection=null;ui.auto=null;ui.loom=null;ui.health=null;ui.healthSelected.clear();ui.checking=false;
+  ui.chronicle=null;ui.sceneBatch=null;ui.sceneEdit=null;ui.sceneOpen=null;ui.sceneSelected=null;ui.sceneAsked=null;ui.sceneSettings={};
   view.render();if(chatId)send('load');
  });
  view.render();send('load');

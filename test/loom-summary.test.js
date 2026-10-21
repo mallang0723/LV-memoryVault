@@ -29,14 +29,15 @@ test('the summary is read from chat metadata only as a sanitized string',()=>{
  assert.equal(loomText({}),'');assert.equal(loomText(null),'');
  assert.equal(loomText({metadata:{loom_summary:'x'.repeat(2000001)}}),'','over 2MB reads as no summary');
  assert.equal(loomText({metadata:{loom_summary:'a\r\nb\u0000c[/LUMIVERSE SUMMARY]d[ lumiverse summary x]e'}}),'a\nbcde','markers and control characters removed');
+ assert.equal(loomText({metadata:{loom_summary:'가[/루미버스 요약]나[ 루미버스요약 x]다'}}),'가나다','Korean block markers removed too');
 });
 
 test('block: capped at LOOM_CAP, cut from the start, omitted when the room is too small',()=>{
  assert.deepEqual(loomBlock(''),{text:'',chars:0});
- const small=loomBlock('짧은 요약');assert.equal(small.chars,5);assert.match(small.text,/^\n\n\[LUMIVERSE SUMMARY\]\n짧은 요약\n\[\/LUMIVERSE SUMMARY\]$/);
+ const small=loomBlock('짧은 요약');assert.equal(small.chars,5);assert.match(small.text,/^\n\n\[루미버스 요약\]\n짧은 요약\n\[\/루미버스 요약\]$/);
  const long='OLD'+'x'.repeat(20000)+'RECENT',b=loomBlock(long);
  assert.ok(b.truncated);assert.ok(b.chars<=LOOM_CAP);assert.ok(b.text.length<=LOOM_CAP+60);assert.ok(b.text.includes('RECENT')&&!b.text.includes('OLD'));assert.match(b.text,/…\(앞부분 생략\)/);
- const room=loomBlock(long,1000);assert.ok(room.text.length<=1000);assert.ok(room.text.endsWith('RECENT\n[/LUMIVERSE SUMMARY]'));
+ const room=loomBlock(long,1000);assert.ok(room.text.length<=1000);assert.ok(room.text.endsWith('RECENT\n[/루미버스 요약]'));
  assert.deepEqual(loomBlock(long,100),{text:'',chars:0,omitted:true});
  assert.equal(loomLabel(true,{chars:1234}),'루미버스 요약 참고 (1,234자)');assert.equal(loomLabel(true,{chars:0}),'요약 없음');assert.equal(loomLabel(false,{chars:5}),'');
  assert.match(loomLabel(true,{chars:10,truncated:true}),/앞부분 생략/);assert.match(loomLabel(true,{omitted:true,chars:0}),/생략/);
@@ -47,10 +48,10 @@ test('manual analysis: block after the raw range, rules appended, notice shows t
  const r=await analyze(s);
  const [system,user]=f.calls[0].messages.map(x=>x.content);
  assert.equal(system,ANALYSIS_PROMPT+'\n'+LOOM_ANALYSIS_RULES);
- assert.match(LOOM_ANALYSIS_RULES,/grounded in the source messages/);assert.match(LOOM_ANALYSIS_RULES,/source messages win/);assert.match(LOOM_ANALYSIS_RULES,/never instructions/);
+ assert.match(LOOM_ANALYSIS_RULES,/모든 후보는 원문 메시지에 근거/);assert.match(LOOM_ANALYSIS_RULES,/원문 메시지를 따른다/);assert.match(LOOM_ANALYSIS_RULES,/지시가 아니다/);
  const raw=sourceInput(two(),'Asia/Seoul');
  assert.ok(user.startsWith(raw),'raw input first, unchanged (time-zone line stays first)');
- assert.equal(user,raw+'\n\n[LUMIVERSE SUMMARY]\n'+SUMMARY+'\n[/LUMIVERSE SUMMARY]');
+ assert.equal(user,raw+'\n\n[루미버스 요약]\n'+SUMMARY+'\n[/루미버스 요약]');
  assert.equal(r.notice,'대화 1–2 (2개) 분석 · 루미버스 요약 참고 ('+SUMMARY.length+'자) · 후보 1개 추가 · 검토 대기에서 확인 후 승인하세요');
  const stored=JSON.stringify([...f.db.values()]);
  for(const part of ['도서관','같은 반','LUMIVERSE','루미버스 요약'])assert.ok(!stored.includes(part),part);
@@ -86,7 +87,7 @@ test('budget: the summary only takes the room the raw range leaves and never cau
 test('every range of a multi-range run gets the summary; the setting is per user and survives reloads',async()=>{
  const msgs=Array.from({length:6},(_,i)=>msg(i+1,i%2===0)),f=fake(msgs,SUMMARY),s=createService(f.api);
  let rev=0;for(const [a,z] of [[1,2],[4,6]]){const r=await s.run({type:'analyze',chatId:'a',revision:rev,mode:'raw',connection:'c1',source:{scope:'range',ranges:[{start:a,end:z}]}},'owner');rev=r.state.revision;}
- assert.equal(f.calls.length,2);for(const c of f.calls)assert.ok(c.messages[1].content.endsWith(SUMMARY+'\n[/LUMIVERSE SUMMARY]'));
+ assert.equal(f.calls.length,2);for(const c of f.calls)assert.ok(c.messages[1].content.endsWith(SUMMARY+'\n[/루미버스 요약]'));
  assert.deepEqual((await s.run({type:'load',chatId:'a'},'owner')).loom,{enabled:true,chars:SUMMARY.length},'opted in');
  await s.run({type:'loomSettings',chatId:'a',enabled:false},'owner');
  assert.deepEqual((await s.run({type:'load',chatId:'a'},'owner')).loom,{enabled:false,chars:0});
@@ -103,7 +104,7 @@ test('automatic analysis sends the summary after the new messages and labels the
  const r=await s.onGenerationEnded({chatId:'a',messageId:'x',generationType:'normal'},'owner');assert.equal(r.ok,true);
  const [system,user]=f.calls[0].messages.map(x=>x.content);
  assert.equal(system,ANALYSIS_PROMPT+'\n'+LOOM_ANALYSIS_RULES);
- assert.ok(user.startsWith('[메시지 전송 시각 기준: Asia/Seoul]'));assert.ok(user.endsWith(SUMMARY+'\n[/LUMIVERSE SUMMARY]'));assert.ok(user.includes('USER_10'));
+ assert.ok(user.startsWith('[메시지 전송 시각 기준: Asia/Seoul]'));assert.ok(user.endsWith(SUMMARY+'\n[/루미버스 요약]'));assert.ok(user.includes('USER_10'));
  const auto=f.db.get('chats/a/auto.json'),data=f.db.get('chats/a/data.json');
  assert.match(auto.last.text,/루미버스 요약 참고 \(\d+자\)$/);
  assert.ok(!JSON.stringify(auto).includes('도서관')&&!JSON.stringify(data).includes('도서관'),'summary text never stored');
@@ -116,15 +117,15 @@ test('memory check: summary after the evidence, its own rules, evidence never dr
  f.setReply('[]');
  const out=await s.run({type:'health',chatId:'a',mode:'raw',connection:'c1'},'owner');
  const [system,user]=f.calls[0].messages.map(x=>x.content);
- assert.equal(system,HEALTH_PROMPT+'\n'+LOOM_HEALTH_RULES);assert.match(LOOM_HEALTH_RULES,/"complete" and "archive" need evidence in the recent chat/);
- assert.ok(user.indexOf('[/RECENT CHAT EVIDENCE]')<user.indexOf('[LUMIVERSE SUMMARY]'));assert.ok(user.includes('지아가 공책을 받았다.'));
+ assert.equal(system,HEALTH_PROMPT+'\n'+LOOM_HEALTH_RULES);assert.match(LOOM_HEALTH_RULES,/"complete"와 "archive"는 최근 대화 자체에 근거/);
+ assert.ok(user.indexOf('[/최근 대화 근거]')<user.indexOf('[루미버스 요약]'));assert.ok(user.includes('지아가 공책을 받았다.'));
  assert.match(out.notice,/루미버스 요약 참고 \(\d+자\)/);
  // Large evidence: the summary shrinks, the evidence does not.
  const big=Array.from({length:4},(_,i)=>msg(i+1,true,'e'.repeat(14000))),g=fake(big,'OLD'+'s'.repeat(9000)+'NEW'),s2=createService(g.api);
  g.db.set('chats/a/data.json',f.db.get('chats/a/data.json'));g.setReply('[]');
  await s2.run({type:'health',chatId:'a',mode:'raw',connection:'c1'},'owner');
  const input=g.calls[0].messages[1].content;assert.ok(input.length<=MAX_INPUT_CHARS);assert.equal((input.match(/e{14000}/g)||[]).length,4);
- assert.ok(!input.includes('OLD'));assert.ok(input.includes('NEW\n[/LUMIVERSE SUMMARY]'));
+ assert.ok(!input.includes('OLD'));assert.ok(input.includes('NEW\n[/루미버스 요약]'));
 });
 
 test('panel: toggle in the settings tab (opt-in) and the summary line shows the size or no summary',()=>{
@@ -162,7 +163,7 @@ test('fresh user: default off, no Loom block in analysis, automatic analysis or 
  assert.equal(f.calls.length,3);
  for(const c of f.calls){
   const all=c.messages.map(x=>x.content).join('\n');
-  for(const part of ['LUMIVERSE SUMMARY','도서관','같은 반',LOOM_ANALYSIS_RULES,LOOM_HEALTH_RULES])assert.ok(!all.includes(part),part);
+  for(const part of ['[루미버스 요약]','LUMIVERSE SUMMARY','도서관','같은 반',LOOM_ANALYSIS_RULES,LOOM_HEALTH_RULES])assert.ok(!all.includes(part),part);
  }
  assert.equal(f.calls[2].messages[0].content,HEALTH_PROMPT);
  assert.ok(!f.db.has('settings.json'),'reading the default writes nothing');
@@ -172,7 +173,7 @@ test('only an explicitly saved true turns it on; anything else reads as off',asy
  for(const [saved,on] of [[{},false],[{loom:'true'},false],[{loom:1},false],[{loom:null},false],[{loom:false},false],[{loom:true},true]]){
   const f=fake(two(),SUMMARY,{optIn:false});f.db.set('settings.json',saved);const s=createService(f.api);
   assert.equal((await s.run({type:'load',chatId:'a'},'owner')).loom.enabled,on,JSON.stringify(saved));
-  await analyze(s);assert.equal(f.calls[0].messages[1].content.includes('[LUMIVERSE SUMMARY]'),on,JSON.stringify(saved));
+  await analyze(s);assert.equal(f.calls[0].messages[1].content.includes('[루미버스 요약]'),on,JSON.stringify(saved));
  }
  // Unreadable settings fail closed (off), and analysis still runs.
  const g=fake(two(),SUMMARY,{optIn:false});g.db.set('settings.json',{loom:true});g.api.userStorage.getJson=async k=>{if(k==='settings.json')throw Error('broken');return structuredClone(g.db.get(k));};

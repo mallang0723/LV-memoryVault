@@ -10,7 +10,12 @@ export function start(api){
  });
  // Automatic analysis (off unless the user enabled it for a chat). Lumiverse 1.2.5
  // delivers host events as handler(payload, userId); the check runs after the reply.
- const offEnded=typeof api.on==='function'?api.on('GENERATION_ENDED',(payload,userId)=>{service.onGenerationEnded(payload,userId).catch(()=>{});}):()=>{};
- return ()=>{offEnded();service.stop();offMessage();offInterceptor();};
+ const offEnded=typeof api.on==='function'?api.on('GENERATION_ENDED',(payload,userId)=>{service.onGenerationEnded(payload,userId).catch(()=>{});service.onSceneEvent(payload,userId).catch(()=>{});}):()=>{};
+ // Scene chronicle: edits, swipes and deletions can make a recorded scene stale; the
+ // world-info interceptor turns such entries (and a parent chat's book copied into a
+ // branch) off for the prompt being assembled even before that re-check has run.
+ const offScene=typeof api.on==='function'?['MESSAGE_EDITED','MESSAGE_SWIPED','MESSAGE_DELETED'].map(e=>api.on(e,(payload,userId)=>{service.onSceneEvent(payload,userId).catch(()=>{});})):[];
+ if(typeof api.registerWorldInfoInterceptor==='function'&&api.permissions?.has?.('generation')){try{api.registerWorldInfoInterceptor(ctx=>service.worldInfoGuard(ctx),100);}catch{}}
+ return ()=>{offEnded();for(const off of offScene)if(typeof off==='function')off();service.stop();offMessage();offInterceptor();};
 }
 if(typeof spindle!=='undefined')start(spindle);

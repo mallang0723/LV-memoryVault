@@ -124,10 +124,10 @@ test('auto settings persist in their own file without touching revision or undo'
  await assert.rejects(()=>s.run(JSON.parse('{"type":"autoSettings","chatId":"a","enabled":false,"every":5,"__proto__":{}}'),'owner'),/위험한 키/);
 });
 
-test('backend subscribes to GENERATION_ENDED and unsubscribes on stop',()=>{
- let subscribed,off=0;const f=fake();
- const stop=start({...f.api,registerInterceptor:()=>()=>{},onFrontendMessage:()=>()=>{},on:(event,fn)=>{subscribed={event,fn};return ()=>off++;}});
- assert.equal(subscribed.event,'GENERATION_ENDED');assert.equal(typeof subscribed.fn,'function');stop();assert.equal(off,1);
+test('backend subscribes to GENERATION_ENDED (plus message events for the scene chronicle) and unsubscribes on stop',()=>{
+ const subs=[];let off=0;const f=fake();
+ const stop=start({...f.api,registerInterceptor:()=>()=>{},onFrontendMessage:()=>()=>{},on:(event,fn)=>{subs.push({event,fn});return ()=>off++;}});
+ assert.deepEqual(subs.map(x=>x.event),['GENERATION_ENDED','MESSAGE_EDITED','MESSAGE_SWIPED','MESSAGE_DELETED']);assert.ok(subs.every(x=>typeof x.fn==='function'));stop();assert.equal(off,subs.length);
 });
 
 test('panel: toggle needs a connection, sends interval, overview shows last run',()=>{
