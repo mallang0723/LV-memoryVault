@@ -83,7 +83,7 @@ for(const [target,loadService,loadCore,loadFrontend] of targets){
   f.add=(n,label='NEW',extra={})=>{for(let j=0;j<n;j++)for(const user of [true,false]){const i=f.next++;f.messages.push({id:'m'+i,is_user:user,content:label+'_'+i,extra:{...extra}});}};f.add(1,'BEFORE');
   f.api={permissions:{has:()=>true},chats:{get:async(id,u)=>id==='a'&&u==='alice'?{id,metadata:{}}:null},chat:{getMessages:async()=>structuredClone(f.messages)},
    connections:{get:async(id)=>{f.calls.push(['connection',id]);if(f.connectionWait){const x=f.connectionWait;f.connectionWait=null;x.started.resolve();await x.release.promise;}return {id,model:'fixture',provider:'fixture'};}},
-   userStorage:{exists:async(k,u)=>f.db.has(u+'/'+k),getJson:async(k,o)=>structuredClone(f.db.get(o.userId+'/'+k)),setJson:async(k,v,o)=>{if(f.failAutoWrites&&k.endsWith('/auto.json'))throw Error('injected auto.json write failure');f.db.set(o.userId+'/'+k,structuredClone(v));}},
+   userStorage:{exists:async(k,u)=>f.db.has(u+'/'+k),getJson:async(k,o)=>structuredClone(f.db.get(o.userId+'/'+k)),setJson:async(k,v,o)=>{if(f.failAutoWrites&&k.endsWith('/auto.json'))throw Error('injected auto.json write failure');if(f.failAttemptWrites&&k.endsWith('/attempt.json'))throw Error('injected attempt write failure');f.db.set(o.userId+'/'+k,structuredClone(v));}},
    generate:{raw:async input=>{f.calls.push(['generate',input]);if(f.generateWait){const x=f.generateWait;f.generateWait=null;x.started.resolve();await x.release.promise;}return {content:f.output};}},
    sendToFrontend:(p,u)=>f.calls.push(['notify',u,p])};
   f.s=createService(f.api,{autoDelayMs:0});f.run=(r,u='alice')=>f.s.run({chatId:'a',...r},u);
@@ -156,6 +156,36 @@ for(const [target,loadService,loadCore,loadFrontend] of targets){
   const f=autoFixture();await f.enable();f.add(3);f.failAutoWrites=true;f.api.generate.raw=async input=>{f.calls.push(['generate',input]);throw Error('provider down');};
   const out=await f.ended();assert.match(out.error,/provider down/);
   for(let i=0;i<3;i++)assert.equal((await f.ended()).skip,'paused');assert.equal(f.gen().length,1);
+ });
+
+ // C7 residual: a result that leaves no candidate evidence (empty result, provider
+ // error) and whose position write is lost must not be re-sent after a worker restart.
+ for(const [name,setup] of [['empty result',f=>{f.output='[]';}],['provider error',f=>{f.api.generate.raw=async input=>{f.calls.push(['generate',input]);throw Error('provider down');};}]]){
+  test(target+' C7 restart after '+name+' and a lost position write: paused, nothing re-sent, settings save resumes after the span',async()=>{
+   const f=autoFixture();await f.enable();f.add(3);setup(f);f.failAutoWrites=true;
+   await f.ended();assert.equal(f.gen().length,1);assert.equal((await f.ended()).skip,'paused');
+   f.failAutoWrites=false;f.s=createService(f.api,{autoDelayMs:0});// worker restart: the in-memory pause is gone
+   assert.equal((await f.ended()).skip,'uncertain');assert.equal(f.gen().length,1,'same span not sent again');
+   const loaded=await f.run({type:'load'});assert.equal(loaded.auto.paused,true);assert.match(loaded.auto.last.error,/기록하지 못한 채 중단/);
+   f.add(3,'LATER');assert.equal((await f.ended()).skip,'uncertain');assert.equal(f.gen().length,1);
+   // Saving the settings acknowledges it: counting resumes after the attempted span.
+   f.output='[{"layer":"wiki","text":"AUTO_CANDIDATE","scope":"public"}]';f.api.generate.raw=async input=>{f.calls.push(['generate',input]);return {content:f.output};};
+   await f.enable();assert.equal((await f.run({type:'load'})).auto.paused,undefined);
+   assert.equal((await f.ended()).ok,true);assert.equal(f.gen().length,2);const input=f.gen()[1][1].messages[1].content;
+   assert.doesNotMatch(input,/NEW_/);assert.match(input,/LATER_/);
+  });
+ }
+ test(target+' C7 the attempt receipt is stored before the call; if it cannot be, nothing is sent',async()=>{
+  const f=autoFixture();await f.enable();f.add(3);f.failAttemptWrites=true;
+  const out=await f.ended();assert.equal(out.skip,'attempt');assert.equal(f.gen().length,0);
+  f.failAttemptWrites=false;assert.equal((await f.ended()).ok,true);assert.equal(f.gen().length,1);
+  assert.equal(f.db.get('alice/chats/a/attempt.json').id,f.auto().lastAttempt,'stored outcome closes the receipt');
+  f.s=createService(f.api,{autoDelayMs:0});assert.equal((await f.ended()).skip,'count','a recorded attempt does not pause after restart');
+ });
+ test(target+' C7 a result dropped as stale closes its receipt, so re-enabling never pauses on it',async()=>{
+  const f=autoFixture();await f.enable();f.add(3);const w=f.wait('generate');const running=f.s.autoCheck('a','alice');await w.started.promise;
+  await f.disable();await f.enable();w.release.resolve();assert.equal((await running).skip,'stale');
+  f.s=createService(f.api,{autoDelayMs:0});f.add(3,'AFTER');assert.equal((await f.ended()).ok,true);assert.match(f.gen()[1][1].messages[1].content,/AFTER_/);
  });
 
  // ---- hidden messages in automatic analysis ----

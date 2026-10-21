@@ -1084,14 +1084,14 @@ function cleanHealth(v){
 const AUTO_SOURCE='자동 분석 모델 후보';
 export const AUTO_EVERY=10,AUTO_MIN=3,AUTO_MAX=100,AUTO_DELAY_MS=1500;
 const autoPath=chatId=>'chats/'+chatId+'/auto.json';
-const autoOff=()=>({enabled:false,every:AUTO_EVERY,mode:'raw',connection:'',timeZone:null,marker:null,failed:null,last:null,gen:null});
+const autoOff=()=>({enabled:false,every:AUTO_EVERY,mode:'raw',connection:'',timeZone:null,marker:null,failed:null,last:null,gen:null,lastAttempt:null});
 const cleanMarker=m=>m&&typeof m==='object'&&Number.isSafeInteger(m.index)&&m.index>=-1?{id:validId(m.id)?m.id:null,index:m.index}:null;
 const cleanLast=l=>l&&typeof l==='object'&&Number.isFinite(l.at)?{at:l.at,ok:l.ok===true,added:Number.isSafeInteger(l.added)?l.added:0,text:String(l.text??'').slice(0,200),note:String(l.note??'').slice(0,300),error:String(l.error??'').slice(0,300)}:null;
 const validEvery=n=>Number.isSafeInteger(n)&&n>=AUTO_MIN&&n<=AUTO_MAX;
 function cleanAuto(v){
  if(!v||typeof v!=='object')return autoOff();
  const mode=['raw','quiet'].includes(v.mode)?v.mode:'raw',connection=validId(v.connection)?v.connection:'';
- return {enabled:v.enabled===true&&!!connection,every:validEvery(v.every)?v.every:AUTO_EVERY,mode,connection,timeZone:validTimeZone(v.timeZone),marker:cleanMarker(v.marker),failed:cleanMarker(v.failed),last:cleanLast(v.last),gen:validId(v.gen)?v.gen:null};
+ return {enabled:v.enabled===true&&!!connection,every:validEvery(v.every)?v.every:AUTO_EVERY,mode,connection,timeZone:validTimeZone(v.timeZone),marker:cleanMarker(v.marker),failed:cleanMarker(v.failed),last:cleanLast(v.last),gen:validId(v.gen)?v.gen:null,lastAttempt:validId(v.lastAttempt)?v.lastAttempt:null};
 }
 export const publicAuto=(a,paused)=>({enabled:a.enabled,every:a.every,mode:a.mode,connection:a.connection,last:paused?paused.last:a.last,...(paused?{paused:true}:{})});
 const markerAt=(all,i)=>i>=0&&all[i]?{id:validId(all[i].id)?all[i].id:null,index:i}:{id:null,index:-1};
@@ -1103,6 +1103,13 @@ const userTurnsAfter=(all,i)=>all.slice(i+1).filter(m=>m?.is_user===true).length
 // Shown when the candidates were saved but the analyzed position could not be stored.
 export const AUTO_PAUSED='후보는 검토 대기에 저장했지만 자동 분석 위치를 저장하지 못해 이 채팅의 자동 분석을 멈췄습니다. 같은 구간을 다시 보내지 않습니다. 다음 답변 때 위치 저장을 다시 시도하며, 설정 탭에서 \'자동 분석 저장\'을 다시 눌러도 다음 구간부터 이어서 셉니다.';
 export const AUTO_PAUSED_FAIL='자동 분석 실패 기록을 저장하지 못해 이 채팅의 자동 분석을 멈췄습니다. 같은 구간을 바로 다시 보내지 않습니다. 다음 답변 때 기록 저장을 다시 시도하며, 설정 탭에서 \'자동 분석 저장\'을 다시 눌러도 이어집니다.';
+// Attempt receipt (chats/<id>/attempt.json): written before every automatic model call
+// and matched by auto.json's lastAttempt once the outcome is stored. An attempt whose
+// outcome was never stored (empty result or provider error, then a lost auto.json write,
+// then a worker restart) leaves no candidate evidence, so the chat stays paused instead
+// of sending the same span again; saving the settings acknowledges it.
+const attemptPath=chatId=>'chats/'+chatId+'/attempt.json';
+export const AUTO_UNCERTAIN='이전 자동 분석의 결과(빈 결과·실패 포함)를 기록하지 못한 채 중단되어, 같은 구간을 다시 보내지 않도록 이 채팅의 자동 분석을 멈췄습니다. 설정 탭에서 \'자동 분석 저장\'을 다시 누르면 그 구간 다음부터 이어서 셉니다.';
 export const SKIP_NOTICE='이번 답변에는 기억을 넣지 못했습니다. 프롬프트에서 대화 기록의 출처를 확인할 수 없는 생성입니다(메시지를 하나로 합치는 프리셋, 대화 기록이 하나뿐인 이어쓰기 등). 보관함 패널의 \'최근 답변\' 표시로 다시 확인할 수 있습니다.';
 export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
  const queues=new Map(),inflight=new Set(),timers=new Map();
@@ -1112,7 +1119,7 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
  // paused: a run whose outcome was saved but whose auto.json position write failed; no
  // automatic call until that position is stored (retried on the next event) or the
  // user saves the settings again.
- const gens=new Map(),paused=new Map();
+ const gens=new Map(),paused=new Map(),attempting=new Map();
  // Last injection outcome per user/chat, shown in the panel, plus the public memory
  // count seen by authenticated panel requests. Both live only in this worker.
  const injections=new Map(), publicCounts=new Map(), warned=new Set();
@@ -1135,6 +1142,12 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
  };
  const readAuto=async(chatId,user)=>{try{if(!await api.userStorage.exists(autoPath(chatId),user))return autoOff();return cleanAuto(safe(await api.userStorage.getJson(autoPath(chatId),{userId:user})));}catch{return autoOff();}};
  const writeAuto=(chatId,user,value)=>api.userStorage.setJson(autoPath(chatId),safe(value),{userId:user});
+ // An attempt file that exists but cannot be read counts as an open attempt (no end known).
+ const readAttempt=async(chatId,user)=>{let v;try{if(!await api.userStorage.exists(attemptPath(chatId),user))return null;v=safe(await api.userStorage.getJson(attemptPath(chatId),{userId:user}));}catch{return {id:'unreadable',end:null};}
+  return v&&validId(v.id)?{id:v.id,gen:validId(v.gen)?v.gen:null,end:cleanMarker(v.end),at:Number.isFinite(v.at)?v.at:0}:{id:'unreadable',end:null};};
+ // Open: not matched by a stored outcome, and neither the stored position nor saved
+ // automatic candidates reach the end of its span.
+ const attemptOpen=(a,attempt,all,done)=>{if(!attempt||attempt.id===a.lastAttempt)return false;if(!attempt.end)return true;const end=markerIndex(all,attempt.end);return done<end&&markerIndex(all,a.marker)<end;};
  // Opt-in: only an explicitly saved true turns it on; missing, unreadable or anything else is off.
  const readLoom=async user=>{try{if(!await api.userStorage.exists(SETTINGS_PATH,user))return false;return safe(await api.userStorage.getJson(SETTINGS_PATH,{userId:user}))?.loom===true;}catch{return false;}};
  // Panel view of the option for one chat: on/off and how many summary characters would
@@ -1169,14 +1182,14 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
     const a=await readAuto(chatId,user);if(!a.enabled)return {skip:'off'};
     // A job from an older settings generation (turned off, or off and on again) never
     // writes its failure into the current settings.
-    if(stale(key,a,internal))return {skip:'stale'};
+    if(stale(key,a,internal)){await settleAttempt(chatId,user,a,internal);return {skip:'stale'};}
     // Failures wait for the next N user messages (counted from the failure point)
     // instead of retrying on every reply. Input that can never fit moves the marker.
-    a.last={at:Date.now(),ok:false,added:0,text:internal.text||'',note:'',error:String(internal.error||'알 수 없는 오류')};
+    a.last={at:Date.now(),ok:false,added:0,text:internal.text||'',note:'',error:String(internal.error||'알 수 없는 오류')};if(internal.attempt)a.lastAttempt=internal.attempt;
     if(internal.advance){a.marker=internal.end;a.failed=null;}else a.failed=internal.end;
     try{await writeAuto(chatId,user,a);}catch{
      // Not stored: pause instead of retrying the same span on every reply.
-     const hold={gen:a.gen,marker:a.marker,failed:a.failed,saved:a.last,last:{...a.last,error:a.last.error+' · '+AUTO_PAUSED_FAIL}};paused.set(key,hold);
+     const hold={gen:a.gen,marker:a.marker,failed:a.failed,saved:a.last,attempt:internal.attempt||null,last:{...a.last,error:a.last.error+' · '+AUTO_PAUSED_FAIL}};paused.set(key,hold);
      return {auto:publicAuto(a,hold),paused:true};
     }
     return {auto:publicAuto(a)};
@@ -1198,7 +1211,7 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
    }
    const response=()=>({chatId,state,output:'답변할 때 승인한 공개 기억만 프롬프트에 넣습니다'});
    if(SCENE_TYPES.includes(r.type)&&r.type!=='sceneRecord')return {...response(),...await chronicle.handle(r,{chatId,user,chat})};
-   if(r.type==='load')return {...response(),auto:publicAuto(await readAuto(chatId,user),paused.get(key)),health:await readHealth(chatId,user),...(internal?.inject?{}:{loom:await loomInfo(chat,user)})};
+   if(r.type==='load')return {...response(),auto:internal?.inject?publicAuto(await readAuto(chatId,user),paused.get(key)):await autoView(chatId,user,key),health:await readHealth(chatId,user),...(internal?.inject?{}:{loom:await loomInfo(chat,user)})};
    if(r.type==='loomSettings'){
     // Separate file: no revision, no undo step, no data.json write.
     const enabled=r.enabled===true;await api.userStorage.setJson(SETTINGS_PATH,safe({loom:enabled}),{userId:user});
@@ -1226,7 +1239,14 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
     // Saving again is the acknowledgement for a paused run: its stored outcome is kept,
     // so the span it already analyzed is not sent again.
     const hold=paused.get(key);
-    if(hold&&enabled&&prev.enabled&&hold.gen===prev.gen){if(hold.marker)next.marker=hold.marker;next.failed=hold.failed;next.last=hold.saved;}
+    if(hold&&enabled&&prev.enabled&&hold.gen===prev.gen){if(hold.marker)next.marker=hold.marker;next.failed=hold.failed;next.last=hold.saved;if(hold.attempt)next.lastAttempt=hold.attempt;}
+    // A stored attempt with no stored outcome (worker restarted): its span was already
+    // sent, so counting resumes after it. Turning on again starts from now anyway.
+    const attempt=await readAttempt(chatId,user);
+    if(attempt&&attempt.id!==next.lastAttempt&&attempt.id!==attempting.get(key)){
+     if(enabled&&prev.enabled&&attempt.end){try{gate('chat_mutation');const all=await api.chat.getMessages(chatId);if(markerIndex(all,attempt.end)>markerIndex(all,next.marker)){next.marker=attempt.end;next.failed=null;}}catch{}}
+     next.lastAttempt=attempt.id;
+    }
     await writeAuto(chatId,user,next);paused.delete(key);
     return {...response(),auto:publicAuto(next),notice:enabled?'자동 분석 켜짐 · 지금부터 사용자 메시지 '+every+'개마다 새 대화를 분석해 검토 대기에 후보로 넣습니다':'자동 분석 꺼짐'};
    }
@@ -1241,7 +1261,7 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
     auto=await readAuto(chatId,user);if(!auto.enabled)return {skip:'off'};
     // A result from an older settings generation (off and on again since it was
     // prepared) is dropped: it must not add candidates or rewind the new start point.
-    if(stale(key,auto,internal))return {skip:'stale'};
+    if(stale(key,auto,internal)){await settleAttempt(chatId,user,auto,internal);return {skip:'stale'};}
     notice=internal.notice||'';count={analyzed:'자동 분석 · '+internal.text,loomNote:internal.loomNote||'',added:internal.items.length};
     next=apply(state,{type:'propose',items:internal.items.map(x=>({...x,id:crypto.randomUUID(),scope:'unknown',evidence:internal.evidence,source:AUTO_SOURCE+' · '+internal.text}))});
    }else if(r.type==='analyze'){
@@ -1313,10 +1333,10 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
    }
    if(health!==undefined){try{await writeHealth(chatId,user,health);}catch{}}
    let hold;
-   if(auto){auto.marker=internal.end;auto.failed=null;auto.last={at:Date.now(),ok:true,added:count.added,text:internal.text+(internal.loomNote?' · '+internal.loomNote:''),note:notice,error:''};
+   if(auto){auto.marker=internal.end;auto.failed=null;if(internal.attempt)auto.lastAttempt=internal.attempt;auto.last={at:Date.now(),ok:true,added:count.added,text:internal.text+(internal.loomNote?' · '+internal.loomNote:''),note:notice,error:''};
     // Candidates are saved; if the position is not, never report plain success and never
     // let the next reply send the same span again.
-    try{await writeAuto(chatId,user,auto);}catch{hold={gen:auto.gen,marker:auto.marker,failed:null,saved:auto.last,last:{...auto.last,ok:false,error:AUTO_PAUSED}};paused.set(key,hold);}}
+    try{await writeAuto(chatId,user,auto);}catch{hold={gen:auto.gen,marker:auto.marker,failed:null,saved:auto.last,attempt:internal.attempt||null,last:{...auto.last,ok:false,error:AUTO_PAUSED}};paused.set(key,hold);}}
    state=next;return {...response(),saved:true,...(auto?{auto:publicAuto(auto,hold)}:{}),...(hold?{paused:true}:{}),...(health!==undefined?{health}:{}),...(count||{}),...(count?{notice:count.analyzed+' 분석'+(count.loomNote?' · '+count.loomNote:'')+' · 후보 '+count.added+'개 추가'+(notice?' · '+notice:'')+' · 검토 대기에서 확인 후 승인하세요'}:notice?{notice:'저장 완료 · '+notice}:{}),...(scene?{chronicle:scene.chronicle,notice:scene.notice}:{})};
   });queues.set(key,task);try{const out=await task;if(out?.state)remember(publicCounts,key,publicItems(out.state).length);const injection=injections.get(key);return injection?{...out,injection}:out;}finally{if(queues.get(key)===task)queues.delete(key);}
  }
@@ -1350,6 +1370,17 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
   await writeHealth(chatId,user,health);
   return {health,notice:'기억 점검 · '+text+' · 제안 '+proposals.length+'개'+(note?' · '+note:'')+(proposals.length?' · 체크한 것만 적용됩니다':' · 고칠 것이 없습니다')};
  }
+ // A result dropped as stale (settings turned off/on while it ran) still closes its
+ // receipt; the new settings start from their own position. Best effort.
+ async function settleAttempt(chatId,user,a,internal){if(!internal?.attempt||a.lastAttempt===internal.attempt)return;try{await writeAuto(chatId,user,{...a,lastAttempt:internal.attempt});}catch{}}
+ // Panel view of the automatic analysis: an open attempt left by a restarted worker
+ // shows as paused, like the in-memory pause.
+ async function autoView(chatId,user,key){
+  const a=await readAuto(chatId,user),hold=paused.get(key);if(hold||!a.enabled)return publicAuto(a,hold);
+  const attempt=await readAttempt(chatId,user);if(!attempt||attempt.id===a.lastAttempt)return publicAuto(a);
+  try{gate('chat_mutation');const all=await api.chat.getMessages(chatId);if(!attemptOpen(a,attempt,all,await autoDone(chatId,user,all)))return publicAuto(a);}catch{return publicAuto(a);}
+  return publicAuto(a,{last:{at:attempt.at||Date.now(),ok:false,added:0,text:'',note:'',error:AUTO_UNCERTAIN}});
+ }
  // Whether a prepared automatic job belongs to an older settings generation.
  function stale(key,a,x){return a.gen!==(x?.gen??null)||(gens.has(key)&&gens.get(key)!==(x?.gen??null));}
  // Last chat position already covered by automatic candidates stored in data.json
@@ -1369,13 +1400,17 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
   const hold=paused.get(key);
   if(hold){
    if(hold.gen!==a.gen){paused.delete(key);}
-   else{try{await writeAuto(chatId,user,{...a,...(hold.marker?{marker:hold.marker}:{}),failed:hold.failed,last:hold.saved});paused.delete(key);return {skip:'resumed'};}catch{return {skip:'paused'};}}
+   else{try{await writeAuto(chatId,user,{...a,...(hold.marker?{marker:hold.marker}:{}),failed:hold.failed,last:hold.saved,...(hold.attempt?{lastAttempt:hold.attempt}:{})});paused.delete(key);return {skip:'resumed'};}catch{return {skip:'paused'};}}
   }
   gate('generation');gate('chat_mutation');
   const all=await api.chat.getMessages(chatId),end=markerAt(all,all.length-1);
   // The stored position, moved forward (never back) past spans whose automatic candidates
   // are already in data.json: a lost position write can never re-send a saved span.
-  const from=Math.max(markerIndex(all,a.marker),await autoDone(chatId,user,all));
+  const done=await autoDone(chatId,user,all),from=Math.max(markerIndex(all,a.marker),done);
+  // An earlier attempt whose outcome was never stored and is not covered by saved
+  // candidates: its span may already have been sent, so nothing is sent until the user
+  // saves the settings again (restart-safe; the in-memory pause above covers this worker).
+  if(attemptOpen(a,await readAttempt(chatId,user),all,done))return {skip:'uncertain'};
   const users=userTurnsAfter(all,from);
   if(users<a.every)return {skip:'count',users};
   if(a.failed&&userTurnsAfter(all,markerIndex(all,a.failed))<a.every)return {skip:'backoff',users};
@@ -1409,6 +1444,9 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
     // while the connection lookup was pending means nothing is sent.
     const now=await readAuto(chatId,user);
     if(!now.enabled||stale(key,now,x)||now.mode!==x.mode||now.connection!==x.connection||paused.has(key))return {skip:now.enabled?'stale':'off'};
+    // Receipt right before sending: if it cannot be stored, nothing is sent.
+    x.attempt=crypto.randomUUID();attempting.set(key,x.attempt);
+    try{await api.userStorage.setJson(attemptPath(chatId),safe({id:x.attempt,gen:x.gen,end:x.end,at:Date.now()}),{userId:user});}catch{return {skip:'attempt',error:'자동 분석 시도 기록을 저장하지 못해 이번에는 보내지 않았습니다.'};}
     gate('generation');const generated=await api.generate[x.mode]({messages:[{role:'system',content:x.system},{role:'user',content:x.input}],connection_id:x.connection,userId:user,...target});
     const normalized=normalizeCandidates(parseCandidates(generated?.content));
     if(normalized.total&&!normalized.items.length)throw Error('모델 응답의 후보 '+normalized.total+'개가 모두 형식 오류입니다(첫 항목: '+normalized.skipped[0].reason+').');
@@ -1417,10 +1455,10 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
     // Saved candidates whose position could not be stored are not reported as success.
     return out.skip?out:out.paused?{paused:true,added:normalized.items.length,error:AUTO_PAUSED}:{ok:true,added:normalized.items.length};
    }catch(error){
-    try{const f=await run({type:'autoFail',chatId},user,{error:error.message,end:x.end,text:x.text,gen:x.gen});if(f.auto)notify(user,chatId,f.auto);}catch{}
+    try{const f=await run({type:'autoFail',chatId},user,{error:error.message,end:x.end,text:x.text,gen:x.gen,attempt:x.attempt});if(f.auto)notify(user,chatId,f.auto);}catch{}
     return {error:error.message};
    }
-  }finally{inflight.delete(key);}
+  }finally{inflight.delete(key);attempting.delete(key);}
  }
  // Host GENERATION_ENDED (payload, userId). Only finished replies count; failed,
  // impersonate and quiet generations are ignored. Bursts (swipes, regenerations)
