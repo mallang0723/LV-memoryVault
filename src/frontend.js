@@ -12,7 +12,7 @@ export function setup(ctx){
   if(typeof ctx.ui.showConfirm==='function'){try{return (await ctx.ui.showConfirm(options))?.confirmed===true;}catch{return false;}}
   return typeof globalThis.confirm==='function'?!!globalThis.confirm(options.message):true;
  };
- const view=createView(root,{send,get:()=>({chatId,state,recovery}),ui,confirm});
+ const view=createView(root,{send,get:()=>({chatId,state,recovery,epoch}),ui,confirm});
  const offMessage=ctx.onBackendMessage(reply=>{
   // Automatic analysis finished in the background: refresh the open chat only.
   if(reply?.event==='autoAnalysis'&&!reply.requestId){if(alive&&reply.chatId&&reply.chatId===chatId){ui.auto=reply.auto||null;send('load');}return;}

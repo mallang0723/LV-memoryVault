@@ -27,10 +27,11 @@ test('explicit model connection and out-of-chat ranges; no memory secrets in pro
  f.a.generate.raw=async input=>{captured=input;return {content:'[{"layer":"elements","text":"proposal","scope":"public"}]'};};
  await s.run({type:'put',confirmPublic:true,chatId:'a',revision:0,item:{id:'secret',layer:'wiki',text:'NEVER_SEND',scope:'secret'}},'owner');
  await assert.rejects(()=>s.run({type:'analyze',chatId:'a',revision:1,mode:'raw',connection:'fake',source:{scope:'range',ranges:[{start:3,end:4}]}},'owner'),/범위 1: 이 범위는 채팅 기록 밖입니다/);
- await assert.rejects(()=>s.run({type:'analyze',chatId:'a',revision:1,mode:'raw',connection:'fake',source:{scope:'range',ranges:[{start:2,end:2}]}},'owner'),/모두 숨김/);
+ await assert.rejects(()=>s.run({type:'analyze',chatId:'a',revision:1,mode:'raw',connection:'fake',source:{scope:'range',ranges:[{start:'1.5',end:2}]}},'owner'),/1 이상의 정수/);
  await assert.rejects(()=>s.run({type:'analyze',chatId:'a',revision:1,mode:'raw',connection:'fake'},'owner'),/분석 범위 방식/);
  const result=await s.run({type:'analyze',chatId:'a',revision:1,mode:'raw',connection:'fake',source:{scope:'last',n:2}},'owner');
- assert.equal(result.state.items.length,1);assert.equal(result.state.candidates.length,1);assert.equal(result.state.candidates[0].scope,'unknown');assert.ok(!JSON.stringify(captured).includes('NEVER_SEND'));assert.ok(!JSON.stringify(captured).includes('secret'));assert.deepEqual(result.state.candidates[0].evidence.map(e=>[e.id,e.index]),[['m',0]]);
+ assert.equal(result.state.items.length,1);assert.equal(result.state.candidates.length,1);assert.equal(result.state.candidates[0].scope,'unknown');assert.ok(!JSON.stringify(captured).includes('NEVER_SEND'));// The hidden chat message is analyzed (0.3.4); the secret memory never is.
+ assert.ok(JSON.stringify(captured).includes('[전송 시각 미상] secret'));assert.deepEqual(result.state.candidates[0].evidence.map(e=>[e.id,e.index]),[['m',0],['hidden',1]]);
  f.grants.delete('chats');await assert.rejects(()=>s.run({type:'load',chatId:'a'},'owner'));
 });
 test('storage failure preserves prior revision; missing trusted user rejected; operator host accepted',async()=>{

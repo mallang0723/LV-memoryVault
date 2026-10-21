@@ -29,18 +29,20 @@ test('scopes resolve to merged spans with Korean errors for anything unusable',(
  assert.deepEqual(merged.spans,[[1,5],[6,6],[8,10]]);assert.ok(merged.warnings.some(w=>/겹치는 범위/.test(w)));assert.ok(merged.warnings.some(w=>/범위 1: 끝 번호가 채팅 기록 밖/.test(w)));
 });
 
-test('summary line counts positions and leaves hidden messages out',()=>{
+test('summary line counts positions and includes hidden messages',()=>{
  assert.equal(sourceSummary({scope:'last',n:22},141).text,'대화 120–141 (22개)');
- assert.equal(sourceSummary({scope:'range',ranges:[{start:1,end:3},{start:7,end:7}]},10,[2]).text,'대화 1–3, 7 (3개) · 숨김 1개 제외');
- assert.match(sourceSummary({scope:'range',ranges:[{start:2,end:2}]},10,[2]).error,/모두 숨김/);
+ assert.equal(sourceSummary({scope:'range',ranges:[{start:1,end:3},{start:7,end:7}]},10,[2]).text,'대화 1–3, 7 (4개, 숨김 1개 포함)');
+ // A range of hidden messages only is analyzable too.
+ assert.equal(sourceSummary({scope:'range',ranges:[{start:2,end:2}]},10,[2]).text,'대화 2 (1개, 숨김 1개 포함)');
+ assert.equal(sourceSummary({scope:'range',ranges:[{start:3,end:4}]},10,[2]).text,'대화 3–4 (2개)');
 });
 
-test('service selection uses host order, skips hidden and keeps full-chat indexes',()=>{
+test('service selection uses host order, includes hidden and keeps full-chat indexes',()=>{
  const chat=[{id:'a',content:'1'},{id:'b',content:'2',extra:{hidden:true}},{id:'c',content:'3'},{id:'d',content:'4'}];
  assert.deepEqual(countOf(chat),{total:4,hidden:[2]});
  const s=selectSource(chat,{scope:'last',n:3});
- assert.deepEqual(s.picked.map(x=>[x.m.id,x.index]),[['c',2],['d',3]]);assert.equal(s.text,'대화 2–4 (2개) · 숨김 1개 제외');
- assert.throws(()=>selectSource(chat,{scope:'range',ranges:[{start:2,end:2}]}),/모두 숨김/);
+ assert.deepEqual(s.picked.map(x=>[x.m.id,x.index]),[['b',1],['c',2],['d',3]]);assert.equal(s.text,'대화 2–4 (3개, 숨김 1개 포함)');
+ assert.deepEqual(selectSource(chat,{scope:'range',ranges:[{start:2,end:2}]}).picked.map(x=>x.m.id),['b']);
  assert.equal(MAX_INPUT_CHARS,60000);
 });
 
@@ -58,8 +60,8 @@ test('one analyze request reads only the chosen range and records evidence by ch
  const r=await s.run({type:'analyze',chatId:'a',revision:0,mode:'raw',connection:'c1',source:{scope:'range',ranges:[{start:4,end:9}]}},'owner');
  const input=api.calls[0].messages[1].content;
  assert.ok(input.includes('BODY_3')&&input.includes('BODY_5'));
- assert.ok(!input.includes('BODY_0')&&!input.includes('BODY_2')&&!input.includes('BODY_4'));
- assert.equal(r.total,6);assert.match(r.notice,/^대화 4–6 \(2개\) · 숨김 1개 제외 분석/);
+ assert.ok(input.includes('BODY_4'),'hidden message in the range is analyzed');assert.ok(!input.includes('BODY_0')&&!input.includes('BODY_2'));
+ assert.deepEqual(r.state.candidates.length,0);assert.equal(r.total,6);assert.match(r.notice,/^대화 4–6 \(3개, 숨김 1개 포함\) 분석/);
 });
 
 const mount=()=>{
@@ -89,15 +91,15 @@ test('recent N is the default scope and the summary follows the typed number',()
 
 test('ranges add, validate, merge, remove and persist per chat',()=>{
  const v=mount();v.open(10,[4]);
- v.click('범위');assert.equal(v.root.querySelector('[aria-label="범위 1 시작"]').value,'1');assert.equal(v.summary(),'대화 1–10 (9개) · 숨김 1개 제외');
- v.type('범위 1 시작','2');v.type('범위 1 끝','5');assert.equal(v.summary(),'대화 2–5 (3개) · 숨김 1개 제외');
+ v.click('범위');assert.equal(v.root.querySelector('[aria-label="범위 1 시작"]').value,'1');assert.equal(v.summary(),'대화 1–10 (10개, 숨김 1개 포함)');
+ v.type('범위 1 시작','2');v.type('범위 1 끝','5');assert.equal(v.summary(),'대화 2–5 (4개, 숨김 1개 포함)');
  v.click('+ 범위 추가');v.type('범위 2 시작','4');v.type('범위 2 끝','6');
- assert.equal(v.summary(),'대화 2–6 (4개) · 숨김 1개 제외');assert.match(v.root.textContent,/겹치는 범위는 하나로 합쳤습니다/);
+ assert.equal(v.summary(),'대화 2–6 (5개, 숨김 1개 포함)');assert.match(v.root.textContent,/겹치는 범위는 하나로 합쳤습니다/);
  v.type('범위 2 시작','30');v.type('범위 2 끝','40');assert.match(v.root.textContent,/범위 2: 이 범위는 채팅 기록 밖입니다/);
  assert.ok(v.root.querySelector('[data-run]').disabled);
- v.root.querySelector('[aria-label="범위 2 삭제"]').click();assert.equal(v.summary(),'대화 2–5 (3개) · 숨김 1개 제외');
+ v.root.querySelector('[aria-label="범위 2 삭제"]').click();assert.equal(v.summary(),'대화 2–5 (4개, 숨김 1개 포함)');
  v.switchTo('b');v.reply({});v.switchTo('a');v.reply({});v.click('분석');
- assert.equal(v.root.querySelector('[aria-label="범위 1 시작"]').value,'2');assert.equal(v.summary(),'대화 2–5 (3개) · 숨김 1개 제외');
+ assert.equal(v.root.querySelector('[aria-label="범위 1 시작"]').value,'2');assert.equal(v.summary(),'대화 2–5 (4개, 숨김 1개 포함)');
  v.cleanup();
 });
 

@@ -32,7 +32,7 @@ test('check sends only eligible memories under aliases plus recent chat, stores 
  const out=await s.run({type:'health',chatId:'a',mode:'raw',connection:'fake'},'owner');
  const input=JSON.stringify(captured());
  for(const secret of ['NEVER_SEND_SECRET','NEVER_SEND_HELD','NEVER_SEND_KNOWN','"p1"','"a1"'])assert.ok(!input.includes(secret),secret);
- assert.match(input,/M1/);assert.match(input,/RECENT CHAT EVIDENCE/);assert.match(input,/전송 시각 미상] public/,'non-hidden recent message is evidence');assert.ok(!input.includes('] secret'),'hidden message is not evidence');
+ assert.match(input,/M1/);assert.match(input,/RECENT CHAT EVIDENCE/);assert.match(input,/전송 시각 미상] public/,'recent message is evidence');assert.ok(input.includes('] secret'),'hidden message is evidence too (0.3.4)');
  assert.equal(captured().messages[0].content,HEALTH_PROMPT);assert.equal(captured().model,'fixture-model');
  assert.equal(out.state.revision,3,'a check never changes memories');
  assert.deepEqual(out.health.proposals.map(p=>[p.action,p.targetId]),[['complete','p1'],['update','a1'],['archive','a2']]);

@@ -113,7 +113,12 @@ export function apply(state,command){
  const before={items:clone(s.items),candidates:clone(s.candidates)};
  if(c.type==='put') {const v=item(c.item);if(s.candidates.some(x=>x.id===v.id))throw Error('후보는 명시 승인 전 저장할 수 없음'); const i=s.items.findIndex(x=>x.id===v.id); disclosure(s.items[i],v,c);if(i<0)s.items.push(v);else s.items[i]=v;}
 
- else if(c.type==='delete'){s.items=s.items.filter(x=>!c.ids.includes(x.id));s.candidates=s.candidates.filter(x=>!c.ids.includes(x.id));}
+ else if(c.type==='delete'){
+  // Every ID must exist in this chat: a selection made in another chat (or before a
+  // reload) is refused as a whole instead of deleting whatever happens to share an ID.
+  if(!Array.isArray(c.ids)||!c.ids.length)throw Error('삭제 대상 형식 오류');
+  const known=new Set([...s.items,...s.candidates].map(x=>x.id));if(c.ids.some(id=>!known.has(id)))throw Error('삭제 대상 불일치: 이 채팅에 없는 항목이 포함됨. 새로고침 후 다시 고르세요.');
+  s.items=s.items.filter(x=>!c.ids.includes(x.id));s.candidates=s.candidates.filter(x=>!c.ids.includes(x.id));}
  else if(c.type==='editCandidate'){const i=s.candidates.findIndex(x=>x.id===c.item.id);if(i<0)throw Error('후보 없음');const v=item(c.item);disclosure(s.candidates[i],v,c);s.candidates[i]=v;}
  else if(c.type==='hold'){for(const x of [...s.items,...s.candidates])if(c.ids.includes(x.id))x.hold=true;}
  else if(c.type==='propose'){for(const x of c.items){const v=item(x);if(!s.candidates.some(y=>y.id===v.id)&&!s.items.some(y=>y.sourceCandidateId===v.id))s.candidates.push(v);}}
@@ -144,6 +149,8 @@ export function apply(state,command){
   // conflict check). Never deletes and never widens scope: text rewrite, completion
   // of a promise/flow, or archive as hold (injection stops, the memory stays).
   for(const ch of c.changes){const x=s.items.find(y=>y.id===ch.targetId);if(!x)throw Error('점검 대상 없음');
+   // Same gates as candidate approval: a locked wiki or a held / restricted memory is never changed by the model.
+   if(x.locked)throw Error('위키 잠금: 먼저 수동 해제');if(!healthEligible(x))throw Error('점검 대상이 보류·제한 상태라 바꿀 수 없음');
    if(ch.action==='update'){if(typeof ch.text!=='string'||!ch.text.trim()||ch.text.length>20000)throw Error('점검 변경 형식 오류');x.text=ch.text;}
    else if(ch.action==='complete'){if(!lifecycleLayers.includes(x.layer))throw Error('완료는 약속·진행 흐름에만');x.status='completed';}
    else if(ch.action==='archive')x.hold=true;
@@ -169,14 +176,19 @@ export async function inherit(parent,pm,cm,cutId,createdAt){
  });return s;
 }
 // Source scope for analysis. Message numbers are 1-based positions in the full chat
-// as the host orders it; hidden messages keep their slot but are never analyzed.
+// as the host orders it; hidden messages keep their slot and are analyzed like any other
+// (a chat whose turns were hidden to save context must still fit into the vault).
 // The panel only knows the message count and hidden positions, never bodies: it shows
 // a summary with sourceSummary(), and the service resolves the same scope against the
 // host messages with selectSource() when the user presses analyze.
 export const MAX_INPUT_CHARS=60000;
 export const MAX_RANGES=20;
 export const DEFAULT_RECENT=20;
-const int=x=>x===''||x===null||x===undefined?NaN:Number(x);
+// Strict: a safe integer number, or a string of ASCII digits (surrounding spaces only).
+// Anything else (1.5, -1, 1e1, 0x10, 15abc) is NaN, so it is reported and never turned
+// into some other, valid-looking number.
+export const strictInt=x=>typeof x==='number'?(Number.isSafeInteger(x)?x:NaN):typeof x==='string'&&/^\s*[0-9]{1,15}\s*$/.test(x)?Number(x):NaN;
+const int=strictInt;
 export function rangeStatus(range,total){
  const [start,end]=[range?.start,range?.end].map(int);
  if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start<1||end<1)return {ok:false,warning:'시작·끝은 1 이상의 정수로 입력하세요.'};
@@ -224,18 +236,17 @@ export function nextRange(prev,total){
  return {start:String(start),end:String(Math.min(total,start+(hi-lo)))};
 }
 export const spanLabel=spans=>'대화 '+spans.map(([a,b])=>a===b?String(a):a+'–'+b).join(', ');
-// Panel summary from the count only: "대화 120–141 (22개)", hidden positions excluded.
+// Panel summary from the count only: "대화 120–141 (22개, 숨김 5개 포함)".
 export function sourceSummary(scope,total,hidden=[]){
  const r=resolveScope(scope,total);if(!r.ok)return r;
- const skip=new Set(hidden),inSpan=n=>r.spans.some(([a,b])=>n>=a&&n<=b);
- const size=r.spans.reduce((n,[a,b])=>n+b-a+1,0),skipped=[...skip].filter(inSpan).length,count=size-skipped;
- if(!count)return {ok:false,error:'고른 범위의 메시지가 모두 숨김이라 분석할 것이 없습니다.'};
- return {...r,count,skipped,text:spanLabel(r.spans)+' ('+count+'개)'+(skipped?' · 숨김 '+skipped+'개 제외':'')};
+ const inSpan=n=>r.spans.some(([a,b])=>n>=a&&n<=b);
+ const count=r.spans.reduce((n,[a,b])=>n+b-a+1,0),hiddenIn=[...new Set(hidden)].filter(inSpan).length;
+ return {...r,count,hiddenIn,text:spanLabel(r.spans)+' ('+count+'개'+(hiddenIn?', 숨김 '+hiddenIn+'개 포함':'')+')'};
 }
 // Service side: the same scope resolved against the host's current messages.
 export function selectSource(messages,scope){
  const {total,hidden}=countOf(messages),s=sourceSummary(scope,total,hidden);if(!s.ok)throw Error(s.error);
- const picked=messages.map((m,index)=>({m,index})).filter(({m,index})=>!m?.extra?.hidden&&s.spans.some(([a,b])=>index+1>=a&&index+1<=b));
+ const picked=messages.map((m,index)=>({m,index})).filter(({index})=>s.spans.some(([a,b])=>index+1>=a&&index+1<=b));
  return {...s,picked};
 }
 export const countOf=messages=>({total:messages.length,hidden:messages.flatMap((m,i)=>m?.extra?.hidden?[i+1]:[])});
@@ -291,7 +302,10 @@ export const loomLabel=(on,b)=>!on?'':b.chars?'루미버스 요약 참고 ('+b.c
 // else is skipped with a reason. Each proposal keeps a snapshot of its target so a
 // memory edited after the check is reported as a conflict instead of being overwritten.
 export const MAX_PROPOSALS=30;
-export const healthEligible=x=>!x.knownBy?.length&&!x.audience&&!x.condition&&!['secret','character'].includes(x.scope)&&!x.hold;
+// Sent to the model and changeable by a proposal: not secret / character-limited /
+// conditional, not held in any way (hold, branch hold, imported scope, resume required:
+// the same set candidateRisks calls 보류) and not a locked wiki. Re-checked at apply time.
+export const healthEligible=x=>!!x&&!x.knownBy?.length&&!x.audience&&!x.condition&&!['secret','character'].includes(x.scope)&&!x.hold&&!x.branchHold&&!x.importedScope&&!x.resumeRequired&&!x.locked;
 export const healthBase=x=>({text:x.text,status:x.status||'active',hold:!!x.hold,scope:x.scope||'unknown'});
 export const sameBase=(x,base)=>!!x&&!!base&&JSON.stringify(healthBase(x))===JSON.stringify(base);
 const actionAlias={update:'update',edit:'update',merge:'update',rewrite:'update',complete:'complete',completed:'complete',done:'complete',archive:'archive',archived:'archive',keep:'keep',none:'keep',add:'add',create:'add',delete:'delete',remove:'delete'};

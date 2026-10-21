@@ -113,7 +113,12 @@ export function apply(state,command){
  const before={items:clone(s.items),candidates:clone(s.candidates)};
  if(c.type==='put') {const v=item(c.item);if(s.candidates.some(x=>x.id===v.id))throw Error('후보는 명시 승인 전 저장할 수 없음'); const i=s.items.findIndex(x=>x.id===v.id); disclosure(s.items[i],v,c);if(i<0)s.items.push(v);else s.items[i]=v;}
 
- else if(c.type==='delete'){s.items=s.items.filter(x=>!c.ids.includes(x.id));s.candidates=s.candidates.filter(x=>!c.ids.includes(x.id));}
+ else if(c.type==='delete'){
+  // Every ID must exist in this chat: a selection made in another chat (or before a
+  // reload) is refused as a whole instead of deleting whatever happens to share an ID.
+  if(!Array.isArray(c.ids)||!c.ids.length)throw Error('삭제 대상 형식 오류');
+  const known=new Set([...s.items,...s.candidates].map(x=>x.id));if(c.ids.some(id=>!known.has(id)))throw Error('삭제 대상 불일치: 이 채팅에 없는 항목이 포함됨. 새로고침 후 다시 고르세요.');
+  s.items=s.items.filter(x=>!c.ids.includes(x.id));s.candidates=s.candidates.filter(x=>!c.ids.includes(x.id));}
  else if(c.type==='editCandidate'){const i=s.candidates.findIndex(x=>x.id===c.item.id);if(i<0)throw Error('후보 없음');const v=item(c.item);disclosure(s.candidates[i],v,c);s.candidates[i]=v;}
  else if(c.type==='hold'){for(const x of [...s.items,...s.candidates])if(c.ids.includes(x.id))x.hold=true;}
  else if(c.type==='propose'){for(const x of c.items){const v=item(x);if(!s.candidates.some(y=>y.id===v.id)&&!s.items.some(y=>y.sourceCandidateId===v.id))s.candidates.push(v);}}
@@ -144,6 +149,8 @@ export function apply(state,command){
   // conflict check). Never deletes and never widens scope: text rewrite, completion
   // of a promise/flow, or archive as hold (injection stops, the memory stays).
   for(const ch of c.changes){const x=s.items.find(y=>y.id===ch.targetId);if(!x)throw Error('점검 대상 없음');
+   // Same gates as candidate approval: a locked wiki or a held / restricted memory is never changed by the model.
+   if(x.locked)throw Error('위키 잠금: 먼저 수동 해제');if(!healthEligible(x))throw Error('점검 대상이 보류·제한 상태라 바꿀 수 없음');
    if(ch.action==='update'){if(typeof ch.text!=='string'||!ch.text.trim()||ch.text.length>20000)throw Error('점검 변경 형식 오류');x.text=ch.text;}
    else if(ch.action==='complete'){if(!lifecycleLayers.includes(x.layer))throw Error('완료는 약속·진행 흐름에만');x.status='completed';}
    else if(ch.action==='archive')x.hold=true;
@@ -169,14 +176,19 @@ export async function inherit(parent,pm,cm,cutId,createdAt){
  });return s;
 }
 // Source scope for analysis. Message numbers are 1-based positions in the full chat
-// as the host orders it; hidden messages keep their slot but are never analyzed.
+// as the host orders it; hidden messages keep their slot and are analyzed like any other
+// (a chat whose turns were hidden to save context must still fit into the vault).
 // The panel only knows the message count and hidden positions, never bodies: it shows
 // a summary with sourceSummary(), and the service resolves the same scope against the
 // host messages with selectSource() when the user presses analyze.
 export const MAX_INPUT_CHARS=60000;
 export const MAX_RANGES=20;
 export const DEFAULT_RECENT=20;
-const int=x=>x===''||x===null||x===undefined?NaN:Number(x);
+// Strict: a safe integer number, or a string of ASCII digits (surrounding spaces only).
+// Anything else (1.5, -1, 1e1, 0x10, 15abc) is NaN, so it is reported and never turned
+// into some other, valid-looking number.
+export const strictInt=x=>typeof x==='number'?(Number.isSafeInteger(x)?x:NaN):typeof x==='string'&&/^\s*[0-9]{1,15}\s*$/.test(x)?Number(x):NaN;
+const int=strictInt;
 export function rangeStatus(range,total){
  const [start,end]=[range?.start,range?.end].map(int);
  if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start<1||end<1)return {ok:false,warning:'시작·끝은 1 이상의 정수로 입력하세요.'};
@@ -224,18 +236,17 @@ export function nextRange(prev,total){
  return {start:String(start),end:String(Math.min(total,start+(hi-lo)))};
 }
 export const spanLabel=spans=>'대화 '+spans.map(([a,b])=>a===b?String(a):a+'–'+b).join(', ');
-// Panel summary from the count only: "대화 120–141 (22개)", hidden positions excluded.
+// Panel summary from the count only: "대화 120–141 (22개, 숨김 5개 포함)".
 export function sourceSummary(scope,total,hidden=[]){
  const r=resolveScope(scope,total);if(!r.ok)return r;
- const skip=new Set(hidden),inSpan=n=>r.spans.some(([a,b])=>n>=a&&n<=b);
- const size=r.spans.reduce((n,[a,b])=>n+b-a+1,0),skipped=[...skip].filter(inSpan).length,count=size-skipped;
- if(!count)return {ok:false,error:'고른 범위의 메시지가 모두 숨김이라 분석할 것이 없습니다.'};
- return {...r,count,skipped,text:spanLabel(r.spans)+' ('+count+'개)'+(skipped?' · 숨김 '+skipped+'개 제외':'')};
+ const inSpan=n=>r.spans.some(([a,b])=>n>=a&&n<=b);
+ const count=r.spans.reduce((n,[a,b])=>n+b-a+1,0),hiddenIn=[...new Set(hidden)].filter(inSpan).length;
+ return {...r,count,hiddenIn,text:spanLabel(r.spans)+' ('+count+'개'+(hiddenIn?', 숨김 '+hiddenIn+'개 포함':'')+')'};
 }
 // Service side: the same scope resolved against the host's current messages.
 export function selectSource(messages,scope){
  const {total,hidden}=countOf(messages),s=sourceSummary(scope,total,hidden);if(!s.ok)throw Error(s.error);
- const picked=messages.map((m,index)=>({m,index})).filter(({m,index})=>!m?.extra?.hidden&&s.spans.some(([a,b])=>index+1>=a&&index+1<=b));
+ const picked=messages.map((m,index)=>({m,index})).filter(({index})=>s.spans.some(([a,b])=>index+1>=a&&index+1<=b));
  return {...s,picked};
 }
 export const countOf=messages=>({total:messages.length,hidden:messages.flatMap((m,i)=>m?.extra?.hidden?[i+1]:[])});
@@ -291,7 +302,10 @@ export const loomLabel=(on,b)=>!on?'':b.chars?'루미버스 요약 참고 ('+b.c
 // else is skipped with a reason. Each proposal keeps a snapshot of its target so a
 // memory edited after the check is reported as a conflict instead of being overwritten.
 export const MAX_PROPOSALS=30;
-export const healthEligible=x=>!x.knownBy?.length&&!x.audience&&!x.condition&&!['secret','character'].includes(x.scope)&&!x.hold;
+// Sent to the model and changeable by a proposal: not secret / character-limited /
+// conditional, not held in any way (hold, branch hold, imported scope, resume required:
+// the same set candidateRisks calls 보류) and not a locked wiki. Re-checked at apply time.
+export const healthEligible=x=>!!x&&!x.knownBy?.length&&!x.audience&&!x.condition&&!['secret','character'].includes(x.scope)&&!x.hold&&!x.branchHold&&!x.importedScope&&!x.resumeRequired&&!x.locked;
 export const healthBase=x=>({text:x.text,status:x.status||'active',hold:!!x.hold,scope:x.scope||'unknown'});
 export const sameBase=(x,base)=>!!x&&!!base&&JSON.stringify(healthBase(x))===JSON.stringify(base);
 const actionAlias={update:'update',edit:'update',merge:'update',rewrite:'update',complete:'complete',completed:'complete',done:'complete',archive:'archive',archived:'archive',keep:'keep',none:'keep',add:'add',create:'add',delete:'delete',remove:'delete'};
@@ -419,26 +433,38 @@ function cleanHealth(v){
 // them never adds a revision or an undo step. Counting reads the host's own messages:
 // only user messages after the marker count, so swipes and regenerations (new variants
 // of an existing reply) never add to it.
+const AUTO_SOURCE='자동 분석 모델 후보';
 export const AUTO_EVERY=10,AUTO_MIN=3,AUTO_MAX=100,AUTO_DELAY_MS=1500;
 const autoPath=chatId=>'chats/'+chatId+'/auto.json';
-const autoOff=()=>({enabled:false,every:AUTO_EVERY,mode:'raw',connection:'',timeZone:null,marker:null,failed:null,last:null});
+const autoOff=()=>({enabled:false,every:AUTO_EVERY,mode:'raw',connection:'',timeZone:null,marker:null,failed:null,last:null,gen:null});
 const cleanMarker=m=>m&&typeof m==='object'&&Number.isSafeInteger(m.index)&&m.index>=-1?{id:validId(m.id)?m.id:null,index:m.index}:null;
 const cleanLast=l=>l&&typeof l==='object'&&Number.isFinite(l.at)?{at:l.at,ok:l.ok===true,added:Number.isSafeInteger(l.added)?l.added:0,text:String(l.text??'').slice(0,200),note:String(l.note??'').slice(0,300),error:String(l.error??'').slice(0,300)}:null;
 const validEvery=n=>Number.isSafeInteger(n)&&n>=AUTO_MIN&&n<=AUTO_MAX;
 function cleanAuto(v){
  if(!v||typeof v!=='object')return autoOff();
  const mode=['raw','quiet'].includes(v.mode)?v.mode:'raw',connection=validId(v.connection)?v.connection:'';
- return {enabled:v.enabled===true&&!!connection,every:validEvery(v.every)?v.every:AUTO_EVERY,mode,connection,timeZone:validTimeZone(v.timeZone),marker:cleanMarker(v.marker),failed:cleanMarker(v.failed),last:cleanLast(v.last)};
+ return {enabled:v.enabled===true&&!!connection,every:validEvery(v.every)?v.every:AUTO_EVERY,mode,connection,timeZone:validTimeZone(v.timeZone),marker:cleanMarker(v.marker),failed:cleanMarker(v.failed),last:cleanLast(v.last),gen:validId(v.gen)?v.gen:null};
 }
-export const publicAuto=a=>({enabled:a.enabled,every:a.every,mode:a.mode,connection:a.connection,last:a.last});
+export const publicAuto=(a,paused)=>({enabled:a.enabled,every:a.every,mode:a.mode,connection:a.connection,last:paused?paused.last:a.last,...(paused?{paused:true}:{})});
 const markerAt=(all,i)=>i>=0&&all[i]?{id:validId(all[i].id)?all[i].id:null,index:i}:{id:null,index:-1};
 // Marker position in the current chat: by message ID, else the stored position
 // clamped to the chat (deleted history never replays the whole chat).
 const markerIndex=(all,m)=>{if(!m)return -1;if(m.id){const i=all.findIndex(x=>x?.id===m.id);if(i>=0)return i;}return Math.min(m.index,all.length-1);};
-const userTurnsAfter=(all,i)=>all.slice(i+1).filter(m=>m?.is_user===true&&!m?.extra?.hidden).length;
+// Hidden user messages count too: they are analyzed like any other message.
+const userTurnsAfter=(all,i)=>all.slice(i+1).filter(m=>m?.is_user===true).length;
+// Shown when the candidates were saved but the analyzed position could not be stored.
+export const AUTO_PAUSED='후보는 검토 대기에 저장했지만 자동 분석 위치를 저장하지 못해 이 채팅의 자동 분석을 멈췄습니다. 같은 구간을 다시 보내지 않습니다. 다음 답변 때 위치 저장을 다시 시도하며, 설정 탭에서 \'자동 분석 저장\'을 다시 눌러도 다음 구간부터 이어서 셉니다.';
+export const AUTO_PAUSED_FAIL='자동 분석 실패 기록을 저장하지 못해 이 채팅의 자동 분석을 멈췄습니다. 같은 구간을 바로 다시 보내지 않습니다. 다음 답변 때 기록 저장을 다시 시도하며, 설정 탭에서 \'자동 분석 저장\'을 다시 눌러도 이어집니다.';
 export const SKIP_NOTICE='이번 답변에는 기억을 넣지 못했습니다. 프롬프트에서 대화 기록의 출처를 확인할 수 없는 생성입니다(메시지를 하나로 합치는 프리셋, 대화 기록이 하나뿐인 이어쓰기 등). 보관함 패널의 \'최근 답변\' 표시로 다시 확인할 수 있습니다.';
 export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
  const queues=new Map(),inflight=new Set(),timers=new Map();
+ // Automatic analysis bookkeeping per user:chat, in this worker only.
+ // gens: the settings generation as soon as a change is decided (before it is written),
+ // so a job prepared under an older generation never submits or applies its result.
+ // paused: a run whose outcome was saved but whose auto.json position write failed; no
+ // automatic call until that position is stored (retried on the next event) or the
+ // user saves the settings again.
+ const gens=new Map(),paused=new Map();
  // Last injection outcome per user/chat, shown in the panel, plus the public memory
  // count seen by authenticated panel requests. Both live only in this worker.
  const injections=new Map(), publicCounts=new Map(), warned=new Set();
@@ -488,14 +514,22 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
   const task=prior.catch(()=>{}).then(async()=>{
    gate('chats');const chat=await api.chats.get(chatId,user);if(!chat)throw Error('채팅 소유권 확인 실패');
    const path='chats/'+chatId+'/data.json';
-   if(r.type==='autoPrepare')return autoPrepare(chatId,user,chat);
+   if(r.type==='autoPrepare')return autoPrepare(chatId,user,chat,key);
    if(r.type==='autoFail'){
     const a=await readAuto(chatId,user);if(!a.enabled)return {skip:'off'};
+    // A job from an older settings generation (turned off, or off and on again) never
+    // writes its failure into the current settings.
+    if(stale(key,a,internal))return {skip:'stale'};
     // Failures wait for the next N user messages (counted from the failure point)
     // instead of retrying on every reply. Input that can never fit moves the marker.
     a.last={at:Date.now(),ok:false,added:0,text:internal.text||'',note:'',error:String(internal.error||'알 수 없는 오류')};
     if(internal.advance){a.marker=internal.end;a.failed=null;}else a.failed=internal.end;
-    await writeAuto(chatId,user,a);return {auto:publicAuto(a)};
+    try{await writeAuto(chatId,user,a);}catch{
+     // Not stored: pause instead of retrying the same span on every reply.
+     const hold={gen:a.gen,marker:a.marker,failed:a.failed,saved:a.last,last:{...a.last,error:a.last.error+' · '+AUTO_PAUSED_FAIL}};paused.set(key,hold);
+     return {auto:publicAuto(a,hold),paused:true};
+    }
+    return {auto:publicAuto(a)};
    }
    if(['restoreBackup','reset'].includes(r.type)){
     if(r.confirmRecovery!==true)throw Error('복구/초기화 명시 확인 필요');
@@ -513,7 +547,7 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
     }
    }
    const response=()=>({chatId,state,output:'답변할 때 승인한 공개 기억만 프롬프트에 넣습니다'});
-   if(r.type==='load')return {...response(),auto:publicAuto(await readAuto(chatId,user)),health:await readHealth(chatId,user),...(internal?.inject?{}:{loom:await loomInfo(chat,user)})};
+   if(r.type==='load')return {...response(),auto:publicAuto(await readAuto(chatId,user),paused.get(key)),health:await readHealth(chatId,user),...(internal?.inject?{}:{loom:await loomInfo(chat,user)})};
    if(r.type==='loomSettings'){
     // Separate file: no revision, no undo step, no data.json write.
     const enabled=r.enabled===true;await api.userStorage.setJson(SETTINGS_PATH,safe({loom:enabled}),{userId:user});
@@ -523,7 +557,7 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
    if(r.type==='health')return {...response(),...await healthCheck(chatId,user,r,state,chat)};
    if(r.type==='autoSettings'){
     // Separate file: no revision, no undo step, no data.json write.
-    const prev=await readAuto(chatId,user),every=Number(r.every),enabled=r.enabled===true;
+    const prev=await readAuto(chatId,user),every=strictInt(r.every),enabled=r.enabled===true;
     if(!validEvery(every))throw Error('자동 분석 간격은 '+AUTO_MIN+'~'+AUTO_MAX+' 사이 정수로 입력하세요.');
     const next={...prev,enabled,every};
     if(enabled){
@@ -534,7 +568,15 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
      // Turning it on starts counting from now; earlier history is never sent automatically.
      if(!prev.enabled){const all=await api.chat.getMessages(chatId);next.marker=markerAt(all,all.length-1);next.failed=null;}
     }
-    await writeAuto(chatId,user,next);
+    // Turning it on or off starts a new generation: anything prepared before can no
+    // longer submit, record a failure or move the position. Other saves keep it, so a
+    // harmless save never drops a finished run and re-sends its span.
+    if(enabled!==prev.enabled||!prev.gen){next.gen=crypto.randomUUID();gens.set(key,next.gen);}
+    // Saving again is the acknowledgement for a paused run: its stored outcome is kept,
+    // so the span it already analyzed is not sent again.
+    const hold=paused.get(key);
+    if(hold&&enabled&&prev.enabled&&hold.gen===prev.gen){if(hold.marker)next.marker=hold.marker;next.failed=hold.failed;next.last=hold.saved;}
+    await writeAuto(chatId,user,next);paused.delete(key);
     return {...response(),auto:publicAuto(next),notice:enabled?'자동 분석 켜짐 · 지금부터 사용자 메시지 '+every+'개마다 새 대화를 분석해 검토 대기에 후보로 넣습니다':'자동 분석 꺼짐'};
    }
    if(r.type==='connections'){gate('generation');return {...response(),connections:(await api.connections.list(user)).map(x=>({id:x.id,name:x.name,model:x.model}))};}
@@ -546,8 +588,11 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
    if(r.type==='autoPropose'){
     // Model output prepared outside the queue; candidates only, scope forced unknown.
     auto=await readAuto(chatId,user);if(!auto.enabled)return {skip:'off'};
+    // A result from an older settings generation (off and on again since it was
+    // prepared) is dropped: it must not add candidates or rewind the new start point.
+    if(stale(key,auto,internal))return {skip:'stale'};
     notice=internal.notice||'';count={analyzed:'자동 분석 · '+internal.text,loomNote:internal.loomNote||'',added:internal.items.length};
-    next=apply(state,{type:'propose',items:internal.items.map(x=>({...x,id:crypto.randomUUID(),scope:'unknown',evidence:internal.evidence,source:'자동 분석 모델 후보 · '+internal.text}))});
+    next=apply(state,{type:'propose',items:internal.items.map(x=>({...x,id:crypto.randomUUID(),scope:'unknown',evidence:internal.evidence,source:AUTO_SOURCE+' · '+internal.text}))});
    }else if(r.type==='analyze'){
     // One request = one model call over one span: recent N, or a single range. The
     // panel runs several ranges as one request per range, in order. The scope is
@@ -610,8 +655,12 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
     const actual=await read(path,user);if(JSON.stringify(actual)!==JSON.stringify(next))throw Error('저장 미확정: 재전송하지 말고 새로고침/백업 확인');
    }
    if(health!==undefined){try{await writeHealth(chatId,user,health);}catch{}}
-   if(auto){auto.marker=internal.end;auto.failed=null;auto.last={at:Date.now(),ok:true,added:count.added,text:internal.text+(internal.loomNote?' · '+internal.loomNote:''),note:notice,error:''};try{await writeAuto(chatId,user,auto);}catch{}}
-   state=next;return {...response(),saved:true,...(auto?{auto:publicAuto(auto)}:{}),...(health!==undefined?{health}:{}),...(count||{}),...(count?{notice:count.analyzed+' 분석'+(count.loomNote?' · '+count.loomNote:'')+' · 후보 '+count.added+'개 추가'+(notice?' · '+notice:'')+' · 검토 대기에서 확인 후 승인하세요'}:notice?{notice:'저장 완료 · '+notice}:{})};
+   let hold;
+   if(auto){auto.marker=internal.end;auto.failed=null;auto.last={at:Date.now(),ok:true,added:count.added,text:internal.text+(internal.loomNote?' · '+internal.loomNote:''),note:notice,error:''};
+    // Candidates are saved; if the position is not, never report plain success and never
+    // let the next reply send the same span again.
+    try{await writeAuto(chatId,user,auto);}catch{hold={gen:auto.gen,marker:auto.marker,failed:null,saved:auto.last,last:{...auto.last,ok:false,error:AUTO_PAUSED}};paused.set(key,hold);}}
+   state=next;return {...response(),saved:true,...(auto?{auto:publicAuto(auto,hold)}:{}),...(hold?{paused:true}:{}),...(health!==undefined?{health}:{}),...(count||{}),...(count?{notice:count.analyzed+' 분석'+(count.loomNote?' · '+count.loomNote:'')+' · 후보 '+count.added+'개 추가'+(notice?' · '+notice:'')+' · 검토 대기에서 확인 후 승인하세요'}:notice?{notice:'저장 완료 · '+notice}:{})};
   });queues.set(key,task);try{const out=await task;if(out?.state)remember(publicCounts,key,publicItems(out.state).length);const injection=injections.get(key);return injection?{...out,injection}:out;}finally{if(queues.get(key)===task)queues.delete(key);}
  }
  const readHealth=async(chatId,user)=>{try{if(!await api.userStorage.exists(healthPath(chatId),user))return null;return cleanHealth(safe(await api.userStorage.getJson(healthPath(chatId),{userId:user})));}catch{return null;}};
@@ -621,20 +670,21 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
   gate('generation');gate('chat_mutation');
   if(!['raw','quiet'].includes(r.mode)||!validId(r.connection))throw Error('모델 연결 확인 필요: 설정 탭에서 분석 모드와 모델 연결을 고르세요.');
   const pool=state.items.filter(healthEligible);
-  if(!pool.length)throw Error('점검할 기억이 없습니다. 비밀·인물 제한·보류 기억은 점검에 보내지 않습니다.');
+  if(!pool.length)throw Error('점검할 기억이 없습니다. 비밀·인물 제한·보류(분기·가져온 범위 포함)·잠긴 위키 기억은 점검에 보내지 않습니다.');
   const targets=new Map(pool.map((x,i)=>['M'+(i+1),x]));
   const memory='[CURRENT MEMORY]\n'+[...targets].map(([id,x])=>JSON.stringify({id,layer:x.layer,kind:layerNames[x.layer],...(lifecycleLayers.includes(x.layer)?{status:x.status||'active'}:{}),text:x.text})).join('\n')+'\n[/CURRENT MEMORY]';
   const head='\n\n[RECENT CHAT EVIDENCE]\n',tail='\n[/RECENT CHAT EVIDENCE]',none='(최근 원문 없음: 중복·모순·압축만 제안하고 완료·보관은 제안하지 마세요.)';
   if(memory.length+head.length+tail.length+none.length>MAX_INPUT_CHARS)throw Error('점검할 기억이 너무 많습니다: 기억 '+memory.length.toLocaleString('en-US')+'자 / 한도 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자. 필요 없는 기억을 보류하거나 삭제한 뒤 다시 점검하세요.');
   const target=r.mode==='raw'?await rawTarget(r.connection,user):{};
-  // Recent non-hidden messages, oldest dropped first until everything fits the limit.
-  const all=await api.chat.getMessages(chatId),picked=all.map((m,index)=>({m,index})).filter(({m})=>!m?.extra?.hidden).slice(-HEALTH_RECENT);
+  // Recent messages (hidden ones included), oldest dropped first until everything fits the limit.
+  const all=await api.chat.getMessages(chatId),picked=all.map((m,index)=>({m,index})).slice(-HEALTH_RECENT);
   let evidence=sourceInput(picked.map(x=>x.m),r.timeZone);
   while(picked.length&&memory.length+head.length+evidence.length+tail.length>MAX_INPUT_CHARS){picked.shift();evidence=sourceInput(picked.map(x=>x.m),r.timeZone);}
   const base=memory+head+(picked.length?evidence:none)+tail;
   // Memories and evidence first; the summary only takes the room they leave.
   const loomOn=await readLoom(user),loom=loomOn?loomBlock(loomText(chat),MAX_INPUT_CHARS-base.length):{text:'',chars:0},input=base+loom.text;
-  const text='기억 '+pool.length+'개 · '+(picked.length?'최근 대화 '+(picked[0].index+1)+'–'+(picked.at(-1).index+1)+' ('+picked.length+'개)':'최근 원문 없음')+(loom.chars||loom.omitted?' · '+loomLabel(loomOn,loom):'');
+  const hiddenIn=picked.filter(x=>x.m?.extra?.hidden).length;
+  const text='기억 '+pool.length+'개 · '+(picked.length?'최근 대화 '+(picked[0].index+1)+'–'+(picked.at(-1).index+1)+' ('+picked.length+'개'+(hiddenIn?', 숨김 '+hiddenIn+'개 포함':'')+')':'최근 원문 없음')+(loom.chars||loom.omitted?' · '+loomLabel(loomOn,loom):'');
   gate('generation');const generated=await api.generate[r.mode]({messages:[{role:'system',content:withLoom(HEALTH_PROMPT,loom,LOOM_HEALTH_RULES)},{role:'user',content:input}],connection_id:r.connection,userId:user,...target});
   const normalized=normalizeProposals(parseCandidates(generated?.content,PROPOSAL_KEYS),targets);
   const note=normalized.skipped.length?normalized.total+'개 중 '+normalized.skipped.length+'개 제외(예: '+(normalized.skipped[0].index+1)+'번째 '+normalized.skipped[0].reason+')':'';
@@ -643,26 +693,46 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
   await writeHealth(chatId,user,health);
   return {health,notice:'기억 점검 · '+text+' · 제안 '+proposals.length+'개'+(note?' · '+note:'')+(proposals.length?' · 체크한 것만 적용됩니다':' · 고칠 것이 없습니다')};
  }
+ // Whether a prepared automatic job belongs to an older settings generation.
+ function stale(key,a,x){return a.gen!==(x?.gen??null)||(gens.has(key)&&gens.get(key)!==(x?.gen??null));}
+ // Last chat position already covered by automatic candidates stored in data.json
+ // (their evidence carries the analyzed message IDs). Unreadable data counts as none.
+ async function autoDone(chatId,user,all){
+  let state;try{state=await read('chats/'+chatId+'/data.json',user);}catch{return -1;}if(!state)return -1;
+  const ids=new Set();for(const x of [...state.items,...state.candidates])if(typeof x.source==='string'&&x.source.startsWith(AUTO_SOURCE))for(const e of x.evidence||[])ids.add(e.id);
+  if(!ids.size)return -1;for(let i=all.length-1;i>=0;i--)if(ids.has(all[i]?.id))return i;return -1;
+ }
  // Runs inside the chat queue after the ownership check: decides whether N user
  // messages have accumulated and snapshots exactly the messages since the marker.
- async function autoPrepare(chatId,user,chat){
+ async function autoPrepare(chatId,user,chat,key){
   const a=await readAuto(chatId,user);if(!a.enabled)return {skip:'off'};
+  if(gens.has(key)&&gens.get(key)!==a.gen)return {skip:'stale'};
+  // A paused run: store its outcome first (no model call this time). Until that works
+  // the chat stays paused; the span it covered is never sent again.
+  const hold=paused.get(key);
+  if(hold){
+   if(hold.gen!==a.gen){paused.delete(key);}
+   else{try{await writeAuto(chatId,user,{...a,...(hold.marker?{marker:hold.marker}:{}),failed:hold.failed,last:hold.saved});paused.delete(key);return {skip:'resumed'};}catch{return {skip:'paused'};}}
+  }
   gate('generation');gate('chat_mutation');
-  const all=await api.chat.getMessages(chatId),from=markerIndex(all,a.marker),end=markerAt(all,all.length-1);
+  const all=await api.chat.getMessages(chatId),end=markerAt(all,all.length-1);
+  // The stored position, moved forward (never back) past spans whose automatic candidates
+  // are already in data.json: a lost position write can never re-send a saved span.
+  const from=Math.max(markerIndex(all,a.marker),await autoDone(chatId,user,all));
   const users=userTurnsAfter(all,from);
   if(users<a.every)return {skip:'count',users};
   if(a.failed&&userTurnsAfter(all,markerIndex(all,a.failed))<a.every)return {skip:'backoff',users};
-  const picked=all.map((m,index)=>({m,index})).filter(({m,index})=>index>from&&!m?.extra?.hidden);
+  const picked=all.map((m,index)=>({m,index})).filter(({index})=>index>from);
   // Over the input limit: the oldest messages are dropped and the marker still moves
   // to the end, so the gap is reported once instead of blocking every later run.
   let input=sourceInput(picked.map(x=>x.m),a.timeZone),dropped=0;
   while(input.length>MAX_INPUT_CHARS&&picked.length>1){picked.shift();dropped++;input=sourceInput(picked.map(x=>x.m),a.timeZone);}
   const text='대화 '+(picked[0].index+1)+'–'+(picked.at(-1).index+1)+' ('+picked.length+'개)'+(dropped?' · 앞 '+dropped+'개는 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자 한도를 넘어 생략':'');
-  if(input.length>MAX_INPUT_CHARS)return {fail:'원문 크기 초과: 메시지 하나가 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자 한도를 넘어 이번 구간을 건너뜁니다.',end,text};
+  if(input.length>MAX_INPUT_CHARS)return {fail:'원문 크기 초과: 메시지 하나가 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자 한도를 넘어 이번 구간을 건너뜁니다.',end,text,gen:a.gen};
   const evidence=await Promise.all(picked.map(async({m,index})=>({id:m.id,index,fingerprint:await fingerprint(m.content)})));
   // Raw messages first; the summary only takes the room they leave (in memory only).
   const loomOn=await readLoom(user),loom=loomOn?loomBlock(loomText(chat),MAX_INPUT_CHARS-input.length):{text:'',chars:0};
-  return {prepared:{mode:a.mode,connection:a.connection,input:input+loom.text,system:withLoom(ANALYSIS_PROMPT,loom,LOOM_ANALYSIS_RULES),evidence,text,loomNote:loom.chars||loom.omitted?loomLabel(loomOn,loom):'',end,users}};
+  return {prepared:{gen:a.gen,mode:a.mode,connection:a.connection,input:input+loom.text,system:withLoom(ANALYSIS_PROMPT,loom,LOOM_ANALYSIS_RULES),evidence,text,loomNote:loom.chars||loom.omitted?loomLabel(loomOn,loom):'',end,users}};
  }
  const notify=(user,chatId,auto)=>{try{api.sendToFrontend?.({event:'autoAnalysis',chatId,auto},user);}catch{}};
  // One automatic run per user/chat at a time; the model call happens outside the chat
@@ -672,19 +742,25 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
   const key=user+':'+chatId;if(inflight.has(key))return {skip:'busy'};inflight.add(key);
   try{
    let p;try{p=await run({type:'autoPrepare',chatId},user,true);}catch(error){return {skip:'error',error:error.message};}
-   if(p.fail){const f=await run({type:'autoFail',chatId},user,{error:p.fail,end:p.end,text:p.text,advance:true});notify(user,chatId,f.auto);return {error:p.fail};}
+   if(p.fail){const f=await run({type:'autoFail',chatId},user,{error:p.fail,end:p.end,text:p.text,advance:true,gen:p.gen});if(f.auto)notify(user,chatId,f.auto);return {error:p.fail,...(f.paused?{paused:true}:{})};}
    if(!p.prepared)return p;
    const x=p.prepared;
    try{
     gate('generation');const target=x.mode==='raw'?await rawTarget(x.connection,user):{};
-    const generated=await api.generate[x.mode]({messages:[{role:'system',content:x.system},{role:'user',content:x.input}],connection_id:x.connection,userId:user,...target});
+    // Right before submitting: the settings this job was prepared under must still be
+    // current (on, same generation, same mode and connection). Turned off or changed
+    // while the connection lookup was pending means nothing is sent.
+    const now=await readAuto(chatId,user);
+    if(!now.enabled||stale(key,now,x)||now.mode!==x.mode||now.connection!==x.connection||paused.has(key))return {skip:now.enabled?'stale':'off'};
+    gate('generation');const generated=await api.generate[x.mode]({messages:[{role:'system',content:x.system},{role:'user',content:x.input}],connection_id:x.connection,userId:user,...target});
     const normalized=normalizeCandidates(parseCandidates(generated?.content));
     if(normalized.total&&!normalized.items.length)throw Error('모델 응답의 후보 '+normalized.total+'개가 모두 형식 오류입니다(첫 항목: '+normalized.skipped[0].reason+').');
     const out=await run({type:'autoPropose',chatId},user,{...x,items:normalized.items,notice:skippedNotice(normalized)});
     if(out.auto)notify(user,chatId,out.auto);
-    return out.skip?out:{ok:true,added:normalized.items.length};
+    // Saved candidates whose position could not be stored are not reported as success.
+    return out.skip?out:out.paused?{paused:true,added:normalized.items.length,error:AUTO_PAUSED}:{ok:true,added:normalized.items.length};
    }catch(error){
-    try{const f=await run({type:'autoFail',chatId},user,{error:error.message,end:x.end,text:x.text});if(f.auto)notify(user,chatId,f.auto);}catch{}
+    try{const f=await run({type:'autoFail',chatId},user,{error:error.message,end:x.end,text:x.text,gen:x.gen});if(f.auto)notify(user,chatId,f.auto);}catch{}
     return {error:error.message};
    }
   }finally{inflight.delete(key);}

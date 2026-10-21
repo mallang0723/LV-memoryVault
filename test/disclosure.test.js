@@ -34,7 +34,8 @@ for(const mode of ['raw','quiet']){
   await s.run({type:'analyze',chatId:'a',revision:0,mode,connection:'selected-local',source:{scope:'last',n:2},input:'override',ids:['hidden'],messages:[{content:'override'}]},'owner');
   assert.equal(calls.length,1);assert.equal(calls[0].kind,mode);assert.equal(calls[0].input.connection_id,'selected-local');
   assert.equal(calls[0].input.messages.length,2);
-  assert.equal(calls[0].input.messages[1].content,'[메시지 전송 시각 기준: UTC (사용자 시간대 미확인)]\n\n[전송 시각 미상] public');assert.match(calls[0].input.messages[0].content,/JSON array of memory candidates/);
+  // Hidden messages are analyzed too (0.3.4): the hidden 'secret' turn is part of the last 2.
+  assert.equal(calls[0].input.messages[1].content,'[메시지 전송 시각 기준: UTC (사용자 시간대 미확인)]\n\n[전송 시각 미상] public\n\n[전송 시각 미상] secret');assert.match(calls[0].input.messages[0].content,/JSON array of memory candidates/);
   await assert.rejects(()=>s.run({type:'analyze',chatId:'a',revision:0,mode,connection:'selected-local',source:{scope:'last',n:2}},'owner'),/revision 충돌/);assert.equal(calls.length,1);
  });
 }

@@ -1,5 +1,5 @@
 import {vaultStyle} from './vault-style.js';
-import {publicItems,selectSafeCandidates,candidateRisks,injectionText,MAX_INPUT_CHARS,MAX_RANGES,DEFAULT_RECENT,sourceSummary,resolveScope,nextRange,spanLabel,rangeStatus,localTimeZone,diagnose,sameBase,layerNames,LOOM_CAP} from './core.js';
+import {publicItems,selectSafeCandidates,candidateRisks,injectionText,MAX_INPUT_CHARS,MAX_RANGES,DEFAULT_RECENT,sourceSummary,resolveScope,nextRange,spanLabel,rangeStatus,localTimeZone,diagnose,sameBase,healthEligible,strictInt,layerNames,LOOM_CAP} from './core.js';
 const tabs=[['overview','개요'],['promises','약속'],['flows','진행 흐름'],['anchors','기억 앵커'],['scenes','장면 기억'],['elements','요소 기억'],['wiki','이야기 위키']];
 const names=Object.fromEntries(tabs);
 const hasLifecycle=layer=>['promises','flows'].includes(layer);
@@ -126,11 +126,18 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
  const countText=()=>'선택 '+ui.selected.size+'개';
  const recount=()=>{for(const n of root.querySelectorAll('[data-selected-count]'))n.textContent=countText();};
  const visibleIn=(rows,key)=>rows.filter(x=>matches(x,ui.queries[key]||''));
+ // The chat, panel epoch and revision a confirmation was opened for. A dialog answered
+ // after any of them changed (chat switch, reset, reload with new data) does nothing.
+ const context=()=>{const g=get();return {chatId:g.chatId,epoch:g.epoch,revision:g.state?.revision};};
+ const sameContext=(a,b)=>a.chatId===b.chatId&&a.epoch===b.epoch&&a.revision===b.revision;
  // Delete always asks with the count; undo stays available in the settings tab.
  async function confirmDelete(ids,what){
   if(!ids.length){ui.note('삭제할 항목을 먼저 고르세요.');return;}
+  const opened=context();ids=[...ids];
   const ok=await confirm({title:'선택 삭제',message:what+' '+ids.length+'개를 삭제합니다. 설정 탭의 되돌리기로 되살릴 수 있습니다.',variant:'danger',confirmLabel:ids.length+'개 삭제',cancelLabel:'취소'});
-  if(ok){ui.selected.clear();send('delete',{ids});}else ui.note('삭제를 취소했습니다.');
+  if(!ok){ui.note('삭제를 취소했습니다.');return;}
+  if(!sameContext(opened,context())){ui.note('확인 창을 연 뒤 채팅이나 기억이 바뀌어 삭제하지 않았습니다. 다시 골라 삭제하세요.');return;}
+  ui.selected.clear();send('delete',{ids,chatId:opened.chatId,revision:opened.revision});
  }
  // Review queue: approval is the user's scope decision. 승인 = 모두가 아는 기억 (injected);
  // 비공개로 보관 = saved but never injected. Candidates that need a one-by-one look
@@ -215,7 +222,7 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
    ui.checking=true;run.disabled=true;run.textContent='점검 중…';
    send('health',{mode:ui.mode||'raw',connection:ui.connection,timeZone:localTimeZone()});
   },c,'lv-run');run.dataset.run='health';run.disabled=!!ui.checking;
-  el('small','누르면 비밀·인물 제한·보류를 뺀 현재 기억과 최근 대화 원문(합쳐서 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자까지)을 설정 탭의 모델 연결로 보내 중복·모순·해소된 상태·지켜진 약속·너무 긴 기억을 찾습니다. 루미버스 요약 참고가 켜져 있으면 남는 한도 안에서 이 채팅의 요약도 참고용으로 함께 보냅니다. 결과는 제안으로만 오고, 체크한 것만 적용합니다. 삭제는 제안하지 않습니다.',c,'mmc-muted');
+  el('small','누르면 비밀·인물 제한·보류(분기·가져온 범위 포함)·잠긴 위키를 뺀 현재 기억과 최근 대화 원문(숨김 메시지 포함, 합쳐서 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자까지)을 설정 탭의 모델 연결로 보내 중복·모순·해소된 상태·지켜진 약속·너무 긴 기억을 찾습니다. 루미버스 요약 참고가 켜져 있으면 남는 한도 안에서 이 채팅의 요약도 참고용으로 함께 보냅니다. 결과는 제안으로만 오고, 체크한 것만 적용합니다. 삭제는 제안하지 않습니다.',c,'mmc-muted');
   proposals(c,state);
  }
  const actionNames={update:'고쳐 쓰기',complete:'완료로',archive:'보관 (보류·주입 제외)'};
@@ -224,7 +231,7 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
   const box=el('div',undefined,parent,'lv-stack');box.dataset.health='true';
   el('h3','점검 제안 '+h.proposals.length+'개',box);
   el('small',[h.text,h.note].filter(Boolean).join(' · '),box,'mmc-muted');
-  const conflictOf=p=>p.conflict||!sameBase(state.items.find(x=>x.id===p.targetId),p.base);
+  const conflictOf=p=>{const x=state.items.find(y=>y.id===p.targetId);return p.conflict||!healthEligible(x)||!sameBase(x,p.base);};
   const open=h.proposals.filter(p=>!conflictOf(p));
   for(const id of [...ui.healthSelected])if(!open.some(p=>p.id===id))ui.healthSelected.delete(id);
   const bar=el('div',undefined,box,'lv-bulk');
@@ -237,7 +244,7 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
    cb.type='checkbox';cb.checked=!conflict&&ui.healthSelected.has(p.id);cb.disabled=conflict;cb.setAttribute('aria-label','제안 선택: '+actionNames[p.action]+' '+(x?title(x):''));
    cb.onchange=()=>{cb.checked?ui.healthSelected.add(p.id):ui.healthSelected.delete(p.id);};
    el('b',actionNames[p.action]+' · '+(layerNames[p.layer]||'')+' · '+(x?title(x):'(지워진 기억)'),line);
-   if(conflict)el('p','충돌: 점검 뒤에 이 기억이 바뀌었거나 지워져 적용하지 않습니다. 다시 점검하세요.',a,'lv-warning');
+   if(conflict)el('p','충돌: 점검 뒤에 이 기억이 바뀌었거나 지워졌거나 잠금·보류되어 적용하지 않습니다. 다시 점검하세요.',a,'lv-warning');
    if(p.action==='update'){el('small','변경 전',a,'mmc-muted');el('pre',p.base.text,a);el('small','변경 후',a,'mmc-muted');el('pre',p.text,a);}
    else el('pre',p.base.text,a);
    if(p.reason)el('small','이유: '+p.reason,a,'mmc-muted');
@@ -245,8 +252,10 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
   const actions=el('div',undefined,box,'lv-actions');
   button('체크한 제안 적용',()=>{const ids=[...ui.healthSelected];if(!ids.length){ui.note('적용할 제안을 고르세요.');return;}send('healthApply',{ids});},actions,'mmc-primary').dataset.healthApply='true';
   button('점검 결과 닫기',async()=>{
+   const opened=context();
    if(open.length&&!await confirm({title:'점검 결과 닫기',message:'적용하지 않은 제안 '+open.length+'개를 버립니다. 기억은 바뀌지 않습니다.',variant:'warning',confirmLabel:'닫기',cancelLabel:'취소'}))return;
-   send('healthDismiss');
+   const now=context();if(opened.chatId!==now.chatId||opened.epoch!==now.epoch){ui.note('확인 창을 연 뒤 채팅이 바뀌어 점검 결과를 닫지 않았습니다.');return;}
+   send('healthDismiss',{chatId:opened.chatId});
   },actions).dataset.healthDismiss='true';
  }
  // Outcome of the most recent reply in this chat since the server started.
@@ -261,11 +270,12 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
  function autoLine(parent){
   const a=ui.auto;if(!a||(!a.enabled&&!a.last))return;
   const l=a.last,at=l?new Date(l.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'';
-  const head='자동 분석'+(a.enabled?'':'(꺼짐)')+': ';
+  const head='자동 분석'+(a.paused?'(멈춤)':a.enabled?'':'(꺼짐)')+': ';
   const text=!l?head+'사용자 메시지 '+a.every+'개마다 · 아직 실행 전'
    :l.ok?head+'마지막 실행 '+at+' · 후보 '+l.added+'개'+(l.text?' · '+l.text:'')+(l.note?' · '+l.note:'')
+   :a.paused?head+'마지막 실행 '+at+(l.added?' · 후보 '+l.added+'개 저장':'')+' · '+l.error
    :head+'마지막 실행 '+at+' · 실패: '+l.error+(a.enabled?' · 사용자 메시지 '+a.every+'개가 더 쌓이면 다시 시도':'');
-  const line=el('p',text,parent,l&&!l.ok?'lv-warning':'mmc-muted');line.dataset.auto=!l?'idle':l.ok?'ok':'error';
+  const line=el('p',text,parent,l&&!l.ok?'lv-warning':'mmc-muted');line.dataset.auto=a.paused?'paused':!l?'idle':l.ok?'ok':'error';
  }
  // Compact row: one clipped title line + one meta line. Only the tapped row renders its detail.
  function itemRow(x,parent,state,{slot='list',candidate=false,pick=true,layer=false}={}){
@@ -346,7 +356,9 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
   const box=el('div',undefined,c,'lv-scope'),seg=el('div',undefined,box,'mmc-seg');seg.setAttribute('role','group');seg.setAttribute('aria-label','분석 범위 방식');
   for(const [id,name] of [['last','최근'],['range','범위']]){const b=button(name,()=>{src.scope=id;if(id==='range'&&!src.ranges.length)src.ranges.push(defaultRange());render();},seg,'mmc-filter'+(src.scope===id?' is-active':''));b.dataset.scope=id;b.setAttribute('aria-pressed',String(src.scope===id));}
   let add=null,addHint=null;
-  const number=(parent,label,value,set)=>{const x=el('input',undefined,parent);x.type='text';x.setAttribute('inputmode','numeric');x.setAttribute('pattern','[0-9]*');x.setAttribute('aria-label',label);x.value=String(value??'');x.oninput=()=>{set(x.value.replace(/[^0-9]/g,''));update();};x.onchange=()=>{x.value=x.value.replace(/[^0-9]/g,'');};return x;};
+  // The typed text is kept as is: anything but a whole number (1.5, -1, 1e1, 15abc) is
+  // shown as an error and blocks analysis instead of becoming some other number.
+  const number=(parent,label,value,set)=>{const x=el('input',undefined,parent);x.type='text';x.setAttribute('inputmode','numeric');x.setAttribute('pattern','[0-9]*');x.setAttribute('aria-label',label);x.value=String(value??'');x.oninput=()=>{set(x.value);update();};x.onchange=x.oninput;return x;};
   if(src.scope==='last'){const l=el('label',undefined,box,'lv-num');el('span','최근',l);number(l,'최근 메시지 개수',src.n,v=>src.n=v);el('span','개 메시지',l);}
   else{
    const list=el('div',undefined,box,'lv-ranges');
@@ -377,15 +389,18 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
    run.textContent='분석 중…';
    send('analyze',{source:src.scope==='last'?{scope:'last',n:src.n}:{scope:'range',ranges:src.ranges.map(r=>({start:r.start,end:r.end}))},...opts});
   },c,'mmc-primary lv-run');run.dataset.run='analyze';run.setAttribute('aria-label','분석 실행');
-  el('small','누르면 고른 범위의 원문을 설정한 모델로 바로 보냅니다(한 번에 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자까지). 비밀이 담긴 대화는 범위에서 빼세요. 루미버스 요약 참고가 켜져 있으면 이 채팅의 요약도 참고용으로 함께 보냅니다. 결과는 후보로만 들어가고 자동 승인하지 않습니다.',c,'mmc-muted');
+  el('small','누르면 고른 범위의 원문을 설정한 모델로 바로 보냅니다(한 번에 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자까지). 숨김 메시지도 함께 보냅니다. 비밀이 담긴 대화는 범위에서 빼세요. 루미버스 요약 참고가 켜져 있으면 이 채팅의 요약도 참고용으로 함께 보냅니다. 결과는 후보로만 들어가고 자동 승인하지 않습니다.',c,'mmc-muted');
   const queue=row(c);el('span','검토 대기 후보 '+state.candidates.length+'개',queue);button('검토 대기 열기',()=>go('overview'),queue,'mmc-sm');
   function update(){
-   const s=!chatId?{ok:false,error:'채팅을 먼저 여세요.'}:count?sourceSummary(src.scope==='last'?{scope:'last',n:src.n}:{scope:'range',ranges:src.ranges},count.total,count.hidden):{ok:true,pending:true};
+   const scope=src.scope==='last'?{scope:'last',n:src.n}:{scope:'range',ranges:src.ranges};
+   // Before the count arrives the numbers are still checked (any total), never sent malformed.
+   const shape=count?null:resolveScope(scope,Number.MAX_SAFE_INTEGER);
+   const s=!chatId?{ok:false,error:'채팅을 먼저 여세요.'}:count?sourceSummary(scope,count.total,count.hidden):shape.ok?{ok:true,pending:true}:shape;
    // The service reports the summary option per chat (on/off and at most how much is sent).
    const loom=ui.loom?.enabled?' · '+(ui.loom.chars?'루미버스 요약 참고 ('+ui.loom.chars.toLocaleString('en-US')+'자)':'요약 없음'):'';
-   summary.textContent=s.pending?'대화 개수 확인 중…':s.ok?s.text+loom:'분석할 대화 없음';summary.dataset.sourceSummary=s.ok&&!s.pending?'ok':s.pending?'pending':'error';
+   summary.textContent=s.pending?'대화 개수 확인 중…':s.ok?s.text+loom:'분석할 수 없는 범위';summary.dataset.sourceSummary=s.ok&&!s.pending?'ok':s.pending?'pending':'error';
    const notes=s.ok?(s.warnings||[]):[s.error];warn.textContent=notes.join(' ');warn.hidden=!notes.length;
-   total.textContent=count?'전체 '+count.total+'개'+(count.hidden.length?' · 숨김 '+count.hidden.length+'개는 분석에서 빠집니다':'')+' · 번호는 채팅 순서 기준':'';
+   total.textContent=count?'전체 '+count.total+'개'+(count.hidden.length?' (숨김 '+count.hidden.length+'개 포함, 숨김 메시지도 분석합니다)':'')+' · 번호는 채팅 순서 기준':'';
    run.disabled=!!ui.analyzing||(!s.ok&&!s.pending);
    if(add){
     const last=src.ranges.at(-1),next=src.ranges.length?nextRange(last,count?.total):{};
@@ -434,11 +449,12 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
   const a=ui.auto||{enabled:false,every:10},c=card(main,'자동 분석');c.dataset.autoSettings='true';
   const toggle=check('사용자 메시지 N개마다 자동 분석',c,!!a.enabled);
   if(!a.enabled&&!ui.connection){toggle.disabled=true;el('small','켜려면 위에서 모델 연결을 먼저 고르세요.',c,'mmc-muted');}
-  const l=el('label',undefined,c,'lv-num');el('span','사용자 메시지',l);const n=el('input',undefined,l);n.type='text';n.setAttribute('inputmode','numeric');n.setAttribute('pattern','[0-9]*');n.setAttribute('aria-label','자동 분석 간격');n.value=String(a.every||10);n.oninput=()=>{n.value=n.value.replace(/[^0-9]/g,'');};el('span','개마다 (3–100)',l);
-  el('p','켜면 마지막 자동 분석 뒤의 대화 원문(한 번에 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자까지)이 위에서 고른 모델 연결로 자동 전송됩니다. 루미버스 요약 참고가 켜져 있으면 이 채팅의 요약도 남는 한도 안에서 함께 보냅니다.',c,'lv-warning');
+  const l=el('label',undefined,c,'lv-num');el('span','사용자 메시지',l);const n=el('input',undefined,l);n.type='text';n.setAttribute('inputmode','numeric');n.setAttribute('pattern','[0-9]*');n.setAttribute('aria-label','자동 분석 간격');n.value=String(a.every||10);el('span','개마다 (3–100)',l);
+  if(a.paused)el('p','멈춤: '+String(a.last?.error||''),c,'lv-warning').dataset.autoPaused='true';
+  el('p','켜면 마지막 자동 분석 뒤의 대화 원문(숨김 메시지 포함, 한 번에 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자까지)이 위에서 고른 모델 연결로 자동 전송됩니다. 루미버스 요약 참고가 켜져 있으면 이 채팅의 요약도 남는 한도 안에서 함께 보냅니다.',c,'lv-warning');
   const save=button('자동 분석 저장',()=>{
-   const every=Number(n.value);
-   if(!Number.isInteger(every)||every<3||every>100){ui.note('자동 분석 간격은 3~100 사이 정수로 입력하세요.');return;}
+   const every=strictInt(n.value);
+   if(!Number.isSafeInteger(every)||every<3||every>100){ui.note('자동 분석 간격은 3~100 사이 정수로 입력하세요.');return;}
    if(toggle.checked&&!ui.connection){ui.note('자동 분석을 켜려면 모델 연결을 먼저 고르세요.');return;}
    send('autoSettings',{enabled:toggle.checked,every,mode:ui.mode||'raw',connection:ui.connection||'',timeZone:localTimeZone()});
   },c,'mmc-sm');save.dataset.autoSave='true';
