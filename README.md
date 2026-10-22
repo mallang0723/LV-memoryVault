@@ -172,6 +172,6 @@ npm run build
 npm run qa
 ```
 
-`npm run qa`는 Chromium이 설치되어 있으면 빌드된 패널을 390px 폭 헤드리스 브라우저에서 합성 응답으로 열어 장면록 한 번 누르기 흐름·가로 넘침·버튼 크기·요청에 메시지 본문이 없는지 확인합니다(없으면 건너뜀). `PLAYWRIGHT_MODULE`(Playwright의 `index.mjs` 경로, 선택: `FIREFOX_BIN`·`CHROMIUM_BIN`)을 주면 `npm run qa`가 360×460 Chromium·Firefox에서 긴 오류 알림이 한 줄로 나오고 탭 막대를 가리지 않으며 펼침·바깥 탭·× 닫기 뒤 패널을 그대로 쓸 수 있는지도 확인합니다. `npm run qa:host`(Bun 필요, 선택)는 Lumiverse 1.2.5 소스(`LUMIVERSE_SRC`, 기본 `../../Lumiverse/src`)의 로어북 활성화 코드로 장면록 엔트리를 돌려 상시·키워드(최근 6개, 조사 붙은 한국어)·전송 본문을 가짜 공급자 HTTP 캡처로 확인합니다. 전체 호스트 실행은 아닙니다(실제 프롬프트 조립·프리셋·공급자 변환을 거친 최종 전송 검증은 아직 하지 않았습니다).
+`npm run qa`는 Chromium이 설치되어 있으면 빌드된 패널을 390px 폭 헤드리스 브라우저에서 합성 응답으로 열어 장면록 한 번 누르기 흐름·가로 넘침·버튼 크기·요청에 메시지 본문이 없는지 확인합니다(없으면 건너뜀). `PLAYWRIGHT_MODULE`(Playwright의 `index.mjs` 경로, 선택: `FIREFOX_BIN`·`CHROMIUM_BIN`)을 주면 `npm run qa`가 360×460 Chromium·Firefox에서 긴 오류 알림이 한 줄로 나오고 탭 막대를 가리지 않으며 펼침·바깥 탭·× 닫기 뒤 패널을 그대로 쓸 수 있는지도 확인합니다. `npm run qa:insecure`(같은 `PLAYWRIGHT_MODULE` 필요)는 휴대폰에서 Tailscale 주소처럼 localhost가 아닌 `http://` 주소(보안 컨텍스트가 아니라 `crypto.randomUUID`가 없음)로 연 경우를 Chromium·Firefox로 재현해, 패널 불러오기·여러 범위 분석·직접 추가 편집기가 오류 없이 동작하는지 확인합니다. `npm run qa:host`(Bun 필요, 선택)는 Lumiverse 1.2.5 소스(`LUMIVERSE_SRC`, 기본 `../../Lumiverse/src`)의 로어북 활성화 코드로 장면록 엔트리를 돌려 상시·키워드(최근 6개, 조사 붙은 한국어)·전송 본문을 가짜 공급자 HTTP 캡처로 확인합니다. 전체 호스트 실행은 아닙니다(실제 프롬프트 조립·프리셋·공급자 변환을 거친 최종 전송 검증은 아직 하지 않았습니다).
 
 소스가 바뀌면 같은 커밋에 재빌드한 `dist/`를 포함해야 합니다. 깨끗한 clone의 재빌드는 추적된 실행물과 바이트가 같아야 합니다. 호스트·브라우저 QA는 합성 데이터와 가짜 공급자로 수행하며 실모델 호출 결과를 의미하지 않습니다.

@@ -1,4 +1,5 @@
 import {createView} from './view.js';
+import {uuid} from './core.js';
 export function setup(ctx){
  const tab=ctx.ui.registerDrawerTab({id:'cabinet',title:'기억 보관함',shortName:'기억',description:'승인 중심 기억 편집'}),root=tab.root;
  let epoch=0,serial=0,accepted=0,chatId=null,state=null,recovery=false,alive=true;
@@ -7,7 +8,7 @@ export function setup(ctx){
  let view;
  const note=message=>{ui.status=message;ui.statusDetail=null;ui.statusOpen=false;view?.drawStatus();};
  ui.note=note;
- const send=(type,extra={},meta={})=>{const requestId=crypto.randomUUID();pending.set(requestId,{...meta,epoch,type,sequence:++serial});ctx.sendToBackend({requestId,type,chatId,revision:state?.revision,...extra});};
+ const send=(type,extra={},meta={})=>{const requestId=uuid();pending.set(requestId,{...meta,epoch,type,sequence:++serial});ctx.sendToBackend({requestId,type,chatId,revision:state?.revision,...extra});};
  // Host confirmation dialog (Lumiverse 1.2.5 ctx.ui.showConfirm); dismissing it cancels.
  const confirm=async options=>{
   if(typeof ctx.ui.showConfirm==='function'){try{return (await ctx.ui.showConfirm(options))?.confirmed===true;}catch{return false;}}

@@ -1,6 +1,6 @@
 import {vaultStyle} from './vault-style.js';
 import {createSceneView} from './scene-view.js';
-import {publicItems,selectSafeCandidates,candidateRisks,injectionText,MAX_INPUT_CHARS,MAX_RANGES,DEFAULT_RECENT,sourceSummary,resolveScope,nextRange,spanLabel,rangeStatus,localTimeZone,diagnose,batchSummary,sameBase,healthEligible,strictInt,layerNames,LOOM_CAP} from './core.js';
+import {publicItems,selectSafeCandidates,candidateRisks,injectionText,MAX_INPUT_CHARS,MAX_RANGES,DEFAULT_RECENT,sourceSummary,resolveScope,nextRange,spanLabel,rangeStatus,localTimeZone,diagnose,batchSummary,sameBase,healthEligible,strictInt,layerNames,LOOM_CAP,uuid} from './core.js';
 const tabs=[['overview','개요'],['promises','약속'],['flows','진행 흐름'],['anchors','기억 앵커'],['scenes','장면 기억'],['elements','요소 기억'],['wiki','이야기 위키']];
 const names=Object.fromEntries(tabs);
 const hasLifecycle=layer=>['promises','flows'].includes(layer);
@@ -104,7 +104,7 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
  const title=x=>clip(x.title||x.text.split('\n')[0])||'제목 없는 기억';
  const matches=(x,q)=>!q||(title(x)+' '+x.text).toLowerCase().includes(q.toLowerCase());
  const explain=x=>[hasLifecycle(x.layer)?(x.status==='completed'?'완료':x.status==='cancelled'?'취소':'진행 중'):['completed','cancelled'].includes(x.status)?'주입 제외 (이전 상태)':'',x.scope==='public'?'공개':x.scope==='secret'?'비밀':x.scope==='character'?'인물 제한':'비공개 (주입 안 함)',x.hold?'보류':'',x.branchHold?'분기 보류':'',x.importedScope?'가져온 범위 보류':'',x.review?'근거 재검토':'',x.locked?'잠금':''].filter(Boolean).join(' · ');
- const openEditor=x=>{ui.editor={...(x||{id:crypto.randomUUID(),layer:ui.tab==='overview'?'promises':ui.tab,text:'',title:'',scope:'unknown',status:'active',source:'수동',evidence:[],knownBy:[]})};render();};
+ const openEditor=x=>{ui.editor={...(x||{id:uuid(),layer:ui.tab==='overview'?'promises':ui.tab,text:'',title:'',scope:'unknown',status:'active',source:'수동',evidence:[],knownBy:[]})};render();};
  // One page of rows plus a "더 보기" button; refills in place so search focus and scroll survive.
  function paged(parent,rows,key,draw,reveal){
   const list=el('div',undefined,parent,'lv-list');list.dataset.list=key;
@@ -353,7 +353,7 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
   const confirm=disclosure(c);el('p','기존 보류·근거·인물 제한은 편집만으로 해제하지 않습니다. 제한 해제는 고급 JSON에서 검토한 뒤 별도 확인해야 합니다.',c,'lv-warning');
   const save=()=>{update();send(state.candidates.some(x=>x.id===draft.id)?'editCandidate':'put',{item:{...draft},confirmPublic:confirm.checked});};
   button('항목 저장',save,c,'mmc-primary');
-  if(draft.layer==='wiki')button('위키 diff 제안',()=>{update();const old=state.items.find(x=>x.id===draft.id);send('propose',{items:[{...draft,id:crypto.randomUUID(),targetId:old?.id,baseText:old?.text}]});},c);
+  if(draft.layer==='wiki')button('위키 diff 제안',()=>{update();const old=state.items.find(x=>x.id===draft.id);send('propose',{items:[{...draft,id:uuid(),targetId:old?.id,baseText:old?.text}]});},c);
   const advanced=el('details',undefined,c);el('summary','고급 JSON · 제한 검토',advanced);const raw=field('항목 JSON','textarea',advanced,JSON.stringify(draft,null,2));
   button('JSON 편집 적용',()=>{try{ui.editor=JSON.parse(raw.value);render();}catch{ui.note('JSON 형식 오류');}},advanced);
  }
@@ -394,7 +394,7 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
    // Separate ranges are analyzed one model call each, in order (recent N is one call).
    const spans=src.scope==='range'?(s.spans||resolveScope({scope:'range',ranges:src.ranges},Number.MAX_SAFE_INTEGER).spans||[]):[];
    ui.analyzing=true;run.disabled=true;if(add)add.disabled=true;
-   if(spans.length>1){ui.batch={id:crypto.randomUUID(),spans,index:0,ok:[],fail:[],notes:[],opts};run.textContent=batchLabel(ui.batch);sendSpan(ui.batch);ui.note(ui.status);return;}
+   if(spans.length>1){ui.batch={id:uuid(),spans,index:0,ok:[],fail:[],notes:[],opts};run.textContent=batchLabel(ui.batch);sendSpan(ui.batch);ui.note(ui.status);return;}
    run.textContent='분석 중…';
    send('analyze',{source:src.scope==='last'?{scope:'last',n:src.n}:{scope:'range',ranges:src.ranges.map(r=>({start:r.start,end:r.end}))},...opts});
   },c,'mmc-primary lv-run');run.dataset.run='analyze';run.setAttribute('aria-label','분석 실행');
