@@ -215,6 +215,8 @@ export async function inherit(parent,pm,cm,cutId,createdAt){
 // a summary with sourceSummary(), and the service resolves the same scope against the
 // host messages with selectSource() when the user presses analyze.
 export const MAX_INPUT_CHARS=60000;
+// One line naming the messages (1-based numbers) skipped for being over the input limit.
+export const skipNote=list=>list?.length?'건너뛴 대화 '+list.slice(0,20).join(', ')+(list.length>20?' 외 '+(list.length-20)+'개':'')+'(메시지 하나가 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자 한도 초과 · 잘라 보내지 않음)':'';
 export const MAX_RANGES=20;
 export const DEFAULT_RECENT=20;
 // Strict: a safe integer number, or a string of ASCII digits (surrounding spaces only).
@@ -432,6 +434,7 @@ export function diagnose(state,auto){
  add('held','공개지만 보류·재검토로 주입이 멈춘 기억 '+held.length+'개',held,'muted');
  const pending=state?.candidates?.length||0;
  if(pending)rows.push({key:'pending',text:'검토 대기 후보 '+pending+'개 · 승인 전에는 주입되지 않습니다',tone:'muted',ids:[]});
+ if(auto?.last?.ok&&auto.last.skipped?.length)rows.push({key:'auto',text:'자동 분석 일부 건너뜀: '+skipNote(auto.last.skipped)+' · 나머지는 분석했습니다',tone:'warn',ids:[]});
  if(auto?.last&&auto.last.ok===false)rows.push({key:'auto',text:'자동 분석 마지막 실행 실패: '+String(auto.last.error||'알 수 없는 오류'),tone:'warn',ids:[]});
  return rows;
 }
@@ -1204,11 +1207,15 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
   const a=ui.auto;if(!a||(!a.enabled&&!a.last))return;
   const l=a.last,at=l?new Date(l.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'';
   const head='자동 분석'+(a.paused?'(멈춤)':a.enabled?'':'(꺼짐)')+': ';
+  // Messages over the input limit are skipped, never cut: the numbers stay visible after
+  // later chunks succeed (partial success) and after a reload.
+  const skip=l?.skipped?.length&&!String(l.error||'').startsWith('원문 크기 초과')?' · '+skipNote(l.skipped):'';
   const text=!l?head+'사용자 메시지 '+a.every+'개마다 · 아직 실행 전'
    :l.ok?head+'마지막 실행 '+at+' · 후보 '+l.added+'개'+(l.text?' · '+l.text:'')+(l.note?' · '+l.note:'')
-   :a.paused?head+'마지막 실행 '+at+(l.added?' · 후보 '+l.added+'개 저장':'')+' · '+l.error
-   :head+'마지막 실행 '+at+' · 실패: '+l.error+(a.enabled?' · 사용자 메시지 '+a.every+'개가 더 쌓이면 다시 시도':'');
-  const line=el('p',text,parent,l&&!l.ok?'lv-warning':'mmc-muted');line.dataset.auto=a.paused?'paused':!l?'idle':l.ok?'ok':'error';
+   :a.paused?head+'마지막 실행 '+at+(l.added?' · 후보 '+l.added+'개 저장':'')+' · '+l.error+skip
+   :head+'마지막 실행 '+at+' · 실패: '+l.error+skip+(a.enabled?' · 사용자 메시지 '+a.every+'개가 더 쌓이면 다시 시도':'');
+  const partial=!!l&&l.ok&&!!l.skipped?.length;
+  const line=el('p',text,parent,l&&(!l.ok||partial)?'lv-warning':'mmc-muted');line.dataset.auto=a.paused?'paused':!l?'idle':partial?'partial':l.ok?'ok':'error';
  }
  // Compact row: one clipped title line + one meta line. Only the tapped row renders its detail.
  function itemRow(x,parent,state,{slot='list',candidate=false,pick=true,layer=false}={}){

@@ -1,6 +1,6 @@
 import {vaultStyle} from './vault-style.js';
 import {createSceneView} from './scene-view.js';
-import {publicItems,selectSafeCandidates,candidateRisks,injectionText,MAX_INPUT_CHARS,MAX_RANGES,DEFAULT_RECENT,sourceSummary,resolveScope,nextRange,spanLabel,rangeStatus,localTimeZone,diagnose,batchSummary,sameBase,healthEligible,strictInt,layerNames,LOOM_CAP,uuid} from './core.js';
+import {skipNote,publicItems,selectSafeCandidates,candidateRisks,injectionText,MAX_INPUT_CHARS,MAX_RANGES,DEFAULT_RECENT,sourceSummary,resolveScope,nextRange,spanLabel,rangeStatus,localTimeZone,diagnose,batchSummary,sameBase,healthEligible,strictInt,layerNames,LOOM_CAP,uuid} from './core.js';
 const tabs=[['overview','개요'],['promises','약속'],['flows','진행 흐름'],['anchors','기억 앵커'],['scenes','장면 기억'],['elements','요소 기억'],['wiki','이야기 위키']];
 const names=Object.fromEntries(tabs);
 const hasLifecycle=layer=>['promises','flows'].includes(layer);
@@ -278,11 +278,15 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
   const a=ui.auto;if(!a||(!a.enabled&&!a.last))return;
   const l=a.last,at=l?new Date(l.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'';
   const head='자동 분석'+(a.paused?'(멈춤)':a.enabled?'':'(꺼짐)')+': ';
+  // Messages over the input limit are skipped, never cut: the numbers stay visible after
+  // later chunks succeed (partial success) and after a reload.
+  const skip=l?.skipped?.length&&!String(l.error||'').startsWith('원문 크기 초과')?' · '+skipNote(l.skipped):'';
   const text=!l?head+'사용자 메시지 '+a.every+'개마다 · 아직 실행 전'
    :l.ok?head+'마지막 실행 '+at+' · 후보 '+l.added+'개'+(l.text?' · '+l.text:'')+(l.note?' · '+l.note:'')
-   :a.paused?head+'마지막 실행 '+at+(l.added?' · 후보 '+l.added+'개 저장':'')+' · '+l.error
-   :head+'마지막 실행 '+at+' · 실패: '+l.error+(a.enabled?' · 사용자 메시지 '+a.every+'개가 더 쌓이면 다시 시도':'');
-  const line=el('p',text,parent,l&&!l.ok?'lv-warning':'mmc-muted');line.dataset.auto=a.paused?'paused':!l?'idle':l.ok?'ok':'error';
+   :a.paused?head+'마지막 실행 '+at+(l.added?' · 후보 '+l.added+'개 저장':'')+' · '+l.error+skip
+   :head+'마지막 실행 '+at+' · 실패: '+l.error+skip+(a.enabled?' · 사용자 메시지 '+a.every+'개가 더 쌓이면 다시 시도':'');
+  const partial=!!l&&l.ok&&!!l.skipped?.length;
+  const line=el('p',text,parent,l&&(!l.ok||partial)?'lv-warning':'mmc-muted');line.dataset.auto=a.paused?'paused':!l?'idle':partial?'partial':l.ok?'ok':'error';
  }
  // Compact row: one clipped title line + one meta line. Only the tapped row renders its detail.
  function itemRow(x,parent,state,{slot='list',candidate=false,pick=true,layer=false}={}){

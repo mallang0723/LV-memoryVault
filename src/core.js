@@ -215,6 +215,8 @@ export async function inherit(parent,pm,cm,cutId,createdAt){
 // a summary with sourceSummary(), and the service resolves the same scope against the
 // host messages with selectSource() when the user presses analyze.
 export const MAX_INPUT_CHARS=60000;
+// One line naming the messages (1-based numbers) skipped for being over the input limit.
+export const skipNote=list=>list?.length?'건너뛴 대화 '+list.slice(0,20).join(', ')+(list.length>20?' 외 '+(list.length-20)+'개':'')+'(메시지 하나가 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자 한도 초과 · 잘라 보내지 않음)':'';
 export const MAX_RANGES=20;
 export const DEFAULT_RECENT=20;
 // Strict: a safe integer number, or a string of ASCII digits (surrounding spaces only).
@@ -432,6 +434,7 @@ export function diagnose(state,auto){
  add('held','공개지만 보류·재검토로 주입이 멈춘 기억 '+held.length+'개',held,'muted');
  const pending=state?.candidates?.length||0;
  if(pending)rows.push({key:'pending',text:'검토 대기 후보 '+pending+'개 · 승인 전에는 주입되지 않습니다',tone:'muted',ids:[]});
+ if(auto?.last?.ok&&auto.last.skipped?.length)rows.push({key:'auto',text:'자동 분석 일부 건너뜀: '+skipNote(auto.last.skipped)+' · 나머지는 분석했습니다',tone:'warn',ids:[]});
  if(auto?.last&&auto.last.ok===false)rows.push({key:'auto',text:'자동 분석 마지막 실행 실패: '+String(auto.last.error||'알 수 없는 오류'),tone:'warn',ids:[]});
  return rows;
 }

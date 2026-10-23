@@ -215,6 +215,8 @@ export async function inherit(parent,pm,cm,cutId,createdAt){
 // a summary with sourceSummary(), and the service resolves the same scope against the
 // host messages with selectSource() when the user presses analyze.
 export const MAX_INPUT_CHARS=60000;
+// One line naming the messages (1-based numbers) skipped for being over the input limit.
+export const skipNote=list=>list?.length?'건너뛴 대화 '+list.slice(0,20).join(', ')+(list.length>20?' 외 '+(list.length-20)+'개':'')+'(메시지 하나가 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자 한도 초과 · 잘라 보내지 않음)':'';
 export const MAX_RANGES=20;
 export const DEFAULT_RECENT=20;
 // Strict: a safe integer number, or a string of ASCII digits (surrounding spaces only).
@@ -432,6 +434,7 @@ export function diagnose(state,auto){
  add('held','공개지만 보류·재검토로 주입이 멈춘 기억 '+held.length+'개',held,'muted');
  const pending=state?.candidates?.length||0;
  if(pending)rows.push({key:'pending',text:'검토 대기 후보 '+pending+'개 · 승인 전에는 주입되지 않습니다',tone:'muted',ids:[]});
+ if(auto?.last?.ok&&auto.last.skipped?.length)rows.push({key:'auto',text:'자동 분석 일부 건너뜀: '+skipNote(auto.last.skipped)+' · 나머지는 분석했습니다',tone:'warn',ids:[]});
  if(auto?.last&&auto.last.ok===false)rows.push({key:'auto',text:'자동 분석 마지막 실행 실패: '+String(auto.last.error||'알 수 없는 오류'),tone:'warn',ids:[]});
  return rows;
 }
@@ -1172,7 +1175,9 @@ export const AUTO_EVERY=10,AUTO_MIN=3,AUTO_MAX=100,AUTO_DELAY_MS=1500;
 const autoPath=chatId=>'chats/'+chatId+'/auto.json';
 const autoOff=()=>({enabled:false,every:AUTO_EVERY,mode:'raw',connection:'',timeZone:null,marker:null,failed:null,last:null,gen:null,lastAttempt:null});
 const cleanMarker=m=>m&&typeof m==='object'&&Number.isSafeInteger(m.index)&&m.index>=-1?{id:validId(m.id)?m.id:null,index:m.index}:null;
-const cleanLast=l=>l&&typeof l==='object'&&Number.isFinite(l.at)?{at:l.at,ok:l.ok===true,added:Number.isSafeInteger(l.added)?l.added:0,text:String(l.text??'').slice(0,200),note:String(l.note??'').slice(0,300),error:String(l.error??'').slice(0,300)}:null;
+// Message numbers (1-based) skipped for being over the input limit during the last run.
+const cleanSkipped=v=>Array.isArray(v)?v.filter(n=>Number.isSafeInteger(n)&&n>0).slice(0,100):[];
+const cleanLast=l=>l&&typeof l==='object'&&Number.isFinite(l.at)?{at:l.at,ok:l.ok===true,added:Number.isSafeInteger(l.added)?l.added:0,text:String(l.text??'').slice(0,200),note:String(l.note??'').slice(0,300),error:String(l.error??'').slice(0,300),...(cleanSkipped(l.skipped).length?{skipped:cleanSkipped(l.skipped)}:{})}:null;
 const validEvery=n=>Number.isSafeInteger(n)&&n>=AUTO_MIN&&n<=AUTO_MAX;
 function cleanAuto(v){
  if(!v||typeof v!=='object')return autoOff();
@@ -1277,8 +1282,11 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
     if(stale(key,a,internal)){await settleAttempt(chatId,user,a,internal);return {skip:'stale'};}
     // Failures wait for the next N user messages (counted from the failure point)
     // instead of retrying on every reply. Input that can never fit moves the marker.
-    a.last={at:Date.now(),ok:false,added:0,text:internal.text||'',note:'',error:String(internal.error||'알 수 없는 오류')};if(internal.attempt)a.lastAttempt=internal.attempt;
-    if(internal.advance){a.marker=internal.end;a.failed=null;}else a.failed=internal.end;
+    a.last={at:Date.now(),ok:false,added:0,text:internal.text||'',note:skipNote(cleanSkipped(internal.skipped)),error:String(internal.error||'알 수 없는 오류'),...(cleanSkipped(internal.skipped).length?{skipped:cleanSkipped(internal.skipped)}:{})};if(internal.attempt)a.lastAttempt=internal.attempt;
+    // The retry resumes after the stored marker, but the wait for new user messages is
+    // counted from the end of the span this run covered (`since`), not from the failed
+    // chunk: messages that were already waiting behind it are not new.
+    if(internal.advance){a.marker=internal.end;a.failed=null;}else a.failed=internal.since||internal.end;
     try{await writeAuto(chatId,user,a);}catch{
      // Not stored: pause instead of retrying the same span on every reply.
      const hold={gen:a.gen,marker:a.marker,failed:a.failed,saved:a.last,attempt:internal.attempt||null,last:{...a.last,error:a.last.error+' · '+AUTO_PAUSED_FAIL}};paused.set(key,hold);
@@ -1438,7 +1446,7 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
    }
    if(health!==undefined){try{await writeHealth(chatId,user,health);}catch{}}
    let hold;
-   if(auto){auto.marker=internal.end;auto.failed=null;if(internal.attempt)auto.lastAttempt=internal.attempt;auto.last={at:Date.now(),ok:true,added:count.added,text:internal.text+(internal.loomNote?' · '+internal.loomNote:''),note:notice,error:''};
+   if(auto){auto.marker=internal.end;auto.failed=null;if(internal.attempt)auto.lastAttempt=internal.attempt;auto.last={at:Date.now(),ok:true,added:count.added+(Number.isSafeInteger(internal.runAdded)?internal.runAdded:0),text:internal.text+(internal.loomNote?' · '+internal.loomNote:''),note:[skipNote(cleanSkipped(internal.skipped)),notice].filter(Boolean).join(' · '),error:'',...(cleanSkipped(internal.skipped).length?{skipped:cleanSkipped(internal.skipped)}:{})};
     // Candidates are saved; if the position is not, never report plain success and never
     // let the next reply send the same span again.
     try{await writeAuto(chatId,user,auto);}catch{hold={gen:auto.gen,marker:auto.marker,failed:null,saved:auto.last,attempt:internal.attempt||null,last:{...auto.last,ok:false,error:AUTO_PAUSED}};paused.set(key,hold);}}
@@ -1531,7 +1539,7 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
   // alone is skipped with a note and the marker moves past it (never cut, never retried).
   const split=splitForInput(pending,a.timeZone),first=split.chunks[0];
   if(!first||split.skipped[0]&&split.skipped[0].index<first[0].index){const big=split.skipped[0];
-   return {fail:'원문 크기 초과: 대화 '+(big.index+1)+' 메시지 하나가 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자 한도를 넘어 건너뜁니다(잘라 보내지 않음).',end:markerAt(all,big.index),text:'대화 '+(big.index+1)+' (1개)',gen:a.gen,more:big.index<last,until:stop};}
+   return {fail:'원문 크기 초과: 대화 '+(big.index+1)+' 메시지 하나가 '+MAX_INPUT_CHARS.toLocaleString('en-US')+'자 한도를 넘어 건너뜁니다(잘라 보내지 않음).',end:markerAt(all,big.index),text:'대화 '+(big.index+1)+' (1개)',gen:a.gen,more:big.index<last,until:stop,number:big.index+1};}
   const picked=first,input=sourceInput(picked.map(x=>x.m),a.timeZone),more=picked.at(-1).index<last;
   const text='대화 '+(picked[0].index+1)+'–'+(picked.at(-1).index+1)+' ('+picked.length+'개)'+(more||cont?' · 대화 '+(cont?'':(pending[0].index+1)+'–')+(last+1)+'까지 나눠 분석 중':'');
   const end=markerAt(all,picked.at(-1).index);
@@ -1573,7 +1581,7 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
    // Saved candidates whose position could not be stored are not reported as success.
    return out.skip?out:out.paused?{paused:true,added:normalized.items.length,error:AUTO_PAUSED}:{ok:true,added:normalized.items.length};
   }catch(error){
-   try{const f=await run({type:'autoFail',chatId},user,{error:error.message,end:x.end,text:x.text,gen:x.gen,attempt:x.attempt});if(f.auto)notify(user,chatId,f.auto);}catch{}
+   try{const f=await run({type:'autoFail',chatId},user,{error:error.message,end:x.end,since:x.since,text:x.text,gen:x.gen,attempt:x.attempt,skipped:x.skipped});if(f.auto)notify(user,chatId,f.auto);}catch{}
    return {error:error.message};
   }
  }
@@ -1585,14 +1593,14 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
   if(!validUser(user)||!validId(chatId))return {skip:'invalid'};
   const key=user+':'+chatId;if(inflight.has(key))return {skip:'busy'};inflight.add(key);
   try{
-   const results=[];let until=null;
+   const results=[],skipped=[];let until=null,runAdded=0;
    for(let i=0;i<AUTO_MAX_CHUNKS;i++){
     let p;try{p=await run({type:'autoPrepare',chatId},user,{cont:i>0,until});}catch(error){if(!i)return {skip:'error',error:error.message};break;}
     if(!i)until=p.until||null;
     let r;
-    if(p.fail){const f=await run({type:'autoFail',chatId},user,{error:p.fail,end:p.end,text:p.text,advance:true,gen:p.gen});if(f.auto)notify(user,chatId,f.auto);r={error:p.fail,skippedMessage:true,...(f.paused?{paused:true}:{})};}
+    if(p.fail){skipped.push(p.number);const f=await run({type:'autoFail',chatId},user,{error:p.fail,end:p.end,text:p.text,advance:true,gen:p.gen,skipped});if(f.auto)notify(user,chatId,f.auto);r={error:p.fail,skippedMessage:true,...(f.paused?{paused:true}:{})};}
     else if(!p.prepared){if(!i)return p;break;}
-    else r=await autoStep(chatId,user,key,p.prepared);
+    else{r=await autoStep(chatId,user,key,{...p.prepared,since:p.until,skipped:[...skipped],runAdded});runAdded+=r.added||0;}
     results.push(r);
     // Continue only after a stored chunk or a skipped oversized message.
     if(!p.more||r.paused||r.skip||(r.error&&!r.skippedMessage))break;
