@@ -435,7 +435,7 @@ export function diagnose(state,auto){
  const pending=state?.candidates?.length||0;
  if(pending)rows.push({key:'pending',text:'검토 대기 후보 '+pending+'개 · 승인 전에는 주입되지 않습니다',tone:'muted',ids:[]});
  if(auto?.last?.ok&&auto.last.skipped?.length)rows.push({key:'auto',text:'자동 분석 일부 건너뜀: '+skipNote(auto.last.skipped)+' · 나머지는 분석했습니다',tone:'warn',ids:[]});
- if(auto?.last&&auto.last.ok===false)rows.push({key:'auto',text:'자동 분석 마지막 실행 실패: '+String(auto.last.error||'알 수 없는 오류'),tone:'warn',ids:[]});
+ if(auto?.last&&auto.last.ok===false)rows.push({key:'auto',text:'자동 분석 마지막 실행 실패: '+String(auto.last.error||'알 수 없는 오류')+(auto.last.skipped?.length?' · '+skipNote(auto.last.skipped):''),tone:'warn',ids:[]});
  return rows;
 }
 
@@ -1209,11 +1209,11 @@ export function createView(root,{send,get,ui,confirm=async()=>true}){
   const head='자동 분석'+(a.paused?'(멈춤)':a.enabled?'':'(꺼짐)')+': ';
   // Messages over the input limit are skipped, never cut: the numbers stay visible after
   // later chunks succeed (partial success) and after a reload.
-  const skip=l?.skipped?.length&&!String(l.error||'').startsWith('원문 크기 초과')?' · '+skipNote(l.skipped):'';
+  const skip=l?.skipped?.length&&!(l.skipped.length===1&&String(l.error||'').startsWith('원문 크기 초과'))?' · '+skipNote(l.skipped):'';
   const text=!l?head+'사용자 메시지 '+a.every+'개마다 · 아직 실행 전'
    :l.ok?head+'마지막 실행 '+at+' · 후보 '+l.added+'개'+(l.text?' · '+l.text:'')+(l.note?' · '+l.note:'')
    :a.paused?head+'마지막 실행 '+at+(l.added?' · 후보 '+l.added+'개 저장':'')+' · '+l.error+skip
-   :head+'마지막 실행 '+at+' · 실패: '+l.error+skip+(a.enabled?' · 사용자 메시지 '+a.every+'개가 더 쌓이면 다시 시도':'');
+   :head+'마지막 실행 '+at+(l.added?' · 후보 '+l.added+'개 저장':'')+' · 실패: '+l.error+skip+(a.enabled?' · 사용자 메시지 '+a.every+'개가 더 쌓이면 다시 시도':'');
   const partial=!!l&&l.ok&&!!l.skipped?.length;
   const line=el('p',text,parent,l&&(!l.ok||partial)?'lv-warning':'mmc-muted');line.dataset.auto=a.paused?'paused':!l?'idle':partial?'partial':l.ok?'ok':'error';
  }

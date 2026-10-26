@@ -435,7 +435,7 @@ export function diagnose(state,auto){
  const pending=state?.candidates?.length||0;
  if(pending)rows.push({key:'pending',text:'검토 대기 후보 '+pending+'개 · 승인 전에는 주입되지 않습니다',tone:'muted',ids:[]});
  if(auto?.last?.ok&&auto.last.skipped?.length)rows.push({key:'auto',text:'자동 분석 일부 건너뜀: '+skipNote(auto.last.skipped)+' · 나머지는 분석했습니다',tone:'warn',ids:[]});
- if(auto?.last&&auto.last.ok===false)rows.push({key:'auto',text:'자동 분석 마지막 실행 실패: '+String(auto.last.error||'알 수 없는 오류'),tone:'warn',ids:[]});
+ if(auto?.last&&auto.last.ok===false)rows.push({key:'auto',text:'자동 분석 마지막 실행 실패: '+String(auto.last.error||'알 수 없는 오류')+(auto.last.skipped?.length?' · '+skipNote(auto.last.skipped):''),tone:'warn',ids:[]});
  return rows;
 }
 
@@ -1282,11 +1282,15 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
     if(stale(key,a,internal)){await settleAttempt(chatId,user,a,internal);return {skip:'stale'};}
     // Failures wait for the next N user messages (counted from the failure point)
     // instead of retrying on every reply. Input that can never fit moves the marker.
-    a.last={at:Date.now(),ok:false,added:0,text:internal.text||'',note:skipNote(cleanSkipped(internal.skipped)),error:String(internal.error||'알 수 없는 오류'),...(cleanSkipped(internal.skipped).length?{skipped:cleanSkipped(internal.skipped)}:{})};if(internal.attempt)a.lastAttempt=internal.attempt;
+    a.last={at:Date.now(),ok:false,added:Number.isSafeInteger(internal.runAdded)?internal.runAdded:0,text:internal.text||'',note:skipNote(cleanSkipped(internal.skipped)),error:String(internal.error||'알 수 없는 오류'),...(cleanSkipped(internal.skipped).length?{skipped:cleanSkipped(internal.skipped)}:{})};if(internal.attempt)a.lastAttempt=internal.attempt;
     // The retry resumes after the stored marker, but the wait for new user messages is
     // counted from the end of the span this run covered (`since`), not from the failed
     // chunk: messages that were already waiting behind it are not new.
-    if(internal.advance){a.marker=internal.end;a.failed=null;}else a.failed=internal.since||internal.end;
+    // Messages that arrived while the run was working are not new either, so the wait is
+    // counted from the chat tail at the moment of the failure (fallback: the covered span).
+    let tail=internal.since||internal.end;
+    if(!internal.advance){try{const all=await api.chat.getMessages(chatId);if(all.length)tail=markerAt(all,all.length-1);}catch{}}
+    if(internal.advance){a.marker=internal.end;a.failed=null;}else a.failed=tail;
     try{await writeAuto(chatId,user,a);}catch{
      // Not stored: pause instead of retrying the same span on every reply.
      const hold={gen:a.gen,marker:a.marker,failed:a.failed,saved:a.last,attempt:internal.attempt||null,last:{...a.last,error:a.last.error+' · '+AUTO_PAUSED_FAIL}};paused.set(key,hold);
@@ -1581,7 +1585,7 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
    // Saved candidates whose position could not be stored are not reported as success.
    return out.skip?out:out.paused?{paused:true,added:normalized.items.length,error:AUTO_PAUSED}:{ok:true,added:normalized.items.length};
   }catch(error){
-   try{const f=await run({type:'autoFail',chatId},user,{error:error.message,end:x.end,since:x.since,text:x.text,gen:x.gen,attempt:x.attempt,skipped:x.skipped});if(f.auto)notify(user,chatId,f.auto);}catch{}
+   try{const f=await run({type:'autoFail',chatId},user,{error:error.message,end:x.end,since:x.since,text:x.text,gen:x.gen,attempt:x.attempt,skipped:x.skipped,runAdded:x.runAdded});if(f.auto)notify(user,chatId,f.auto);}catch{}
    return {error:error.message};
   }
  }
@@ -1598,7 +1602,7 @@ export function createService(api,{autoDelayMs=AUTO_DELAY_MS}={}){
     let p;try{p=await run({type:'autoPrepare',chatId},user,{cont:i>0,until});}catch(error){if(!i)return {skip:'error',error:error.message};break;}
     if(!i)until=p.until||null;
     let r;
-    if(p.fail){skipped.push(p.number);const f=await run({type:'autoFail',chatId},user,{error:p.fail,end:p.end,text:p.text,advance:true,gen:p.gen,skipped});if(f.auto)notify(user,chatId,f.auto);r={error:p.fail,skippedMessage:true,...(f.paused?{paused:true}:{})};}
+    if(p.fail){skipped.push(p.number);const f=await run({type:'autoFail',chatId},user,{error:p.fail,end:p.end,text:p.text,advance:true,gen:p.gen,skipped:[...skipped],runAdded});if(f.auto)notify(user,chatId,f.auto);r={error:p.fail,skippedMessage:true,...(f.paused?{paused:true}:{})};}
     else if(!p.prepared){if(!i)return p;break;}
     else{r=await autoStep(chatId,user,key,{...p.prepared,since:p.until,skipped:[...skipped],runAdded});runAdded+=r.added||0;}
     results.push(r);

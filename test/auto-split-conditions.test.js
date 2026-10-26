@@ -83,3 +83,32 @@ test('overview diagnostics: a partial success lists the skipped message numbers'
  const row=rows.find(x=>x.key==='auto');assert.ok(row);assert.equal(row.tone,'warn');assert.match(row.text,/대화 2, 5/);
  assert.equal(diagnose({items:[],candidates:[]},{last:{ok:true,added:1}}).some(x=>x.key==='auto'),false);
 });
+
+test('backoff: messages that arrived during the run, before the failure, are not new messages',async()=>{
+ const f=await fixture([m('M0',40000),m('M1',40000),m('M2',40000)]);
+ f.api.generate.raw=async r=>{f.calls.generate.push(r);const c=r.messages[1].content;
+  if(c.includes('M0|'))f.msgs.a.push(m('D0',100),m('D1',100),m('D2',100));
+  if(c.includes('M1|'))throw Error('provider failed');return {content:'[]'};};
+ await f.event();assert.equal(f.calls.generate.length,2);
+ assert.equal(f.auto().failed.id,'D2','the wait counts from the chat tail at the failure');
+ assert.equal((await f.event()).skip,'backoff');f.restart();assert.equal((await f.event()).skip,'backoff');
+ assert.equal(f.calls.generate.length,2,'no new message after the failure: nothing is sent again');
+ f.msgs.a.push(m('N0',100),m('N1',100),m('N2',100));f.api.generate.raw=async r=>{f.calls.generate.push(r);return {content:'[]'};};
+ assert.equal((await f.event()).ok,true);assert.ok(sent(f).slice(2)[0].includes('M1|'),'resumes at the failed chunk');
+});
+
+test('skipped message: a skipped last chunk keeps every number and the candidates of the run',async()=>{
+ const f=await fixture([m('a1',40000),m('big1',61000),m('a2',40000),m('big2',61000)]);
+ f.api.generate.raw=async r=>{f.calls.generate.push(r);return {content:JSON.stringify([{layer:'promises',text:'[이야기 1일차] 약속 '+f.calls.generate.length,scope:'public'}])};};
+ await f.s.autoCheck('a','owner');
+ const last=f.auto().last;assert.deepEqual(last.skipped,[2,4]);assert.equal(last.added,2,'candidates stored before the skipped last chunk');
+ assert.match(last.note,/건너뛴 대화 2, 4/);
+ const rows=diagnose({items:[],candidates:[]},{last});const row=rows.find(x=>x.key==='auto');assert.ok(row);assert.match(row.text,/2, 4/);
+ const {document}=parseHTML('<html><body></body></html>');globalThis.document=document;
+ const root=document.createElement('div');document.body.append(root);let listener;const out=[];
+ const cleanup=setup({ui:{registerDrawerTab:()=>({root,destroy(){}})},sendToBackend:r=>out.push(r),onBackendMessage:fn=>{listener=fn;return()=>{};},events:{on:()=>()=>{}}});
+ listener({requestId:out[0].requestId,ok:true,chatId:'a',state:{version:1,revision:0,items:[],candidates:[],undo:[]},auto:{enabled:true,every:3,mode:'raw',connection:'c',last}});
+ [...root.querySelectorAll('button')].find(x=>x.textContent==='개요').click();
+ const line=root.querySelector('[data-auto]');assert.match(line.textContent,/건너뛴 대화 2, 4/);assert.match(line.textContent,/후보 2개/);
+ cleanup();
+});
