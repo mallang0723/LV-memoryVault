@@ -2,7 +2,7 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { verify } from './verify-original.mjs';
-const root = new URL('../../', import.meta.url).pathname, here = new URL('../', import.meta.url).pathname;
+const root = new URL("../", import.meta.url).pathname, here = new URL('../', import.meta.url).pathname;
 const bad = verify(root);
 if (bad.length) { console.error('original differs from pin:\n' + bad.join('\n')); process.exit(1); }
 const js = readFileSync(root + 'vendor/original/extension.js', 'utf8'), css = readFileSync(root + 'vendor/original/extension.css', 'utf8');

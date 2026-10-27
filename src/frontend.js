@@ -1,64 +1,27 @@
-import {createView} from './view.js';
-import {uuid} from './core.js';
-export function setup(ctx){
- const tab=ctx.ui.registerDrawerTab({id:'cabinet',title:'기억 보관함',shortName:'기억',description:'승인 중심 기억 편집'}),root=tab.root;
- let epoch=0,serial=0,accepted=0,chatId=null,state=null,recovery=false,alive=true;
- const pending=new Map();
- const ui={tab:'overview',filter:'all',selected:new Set(),connections:[],status:'',editor:null,transfer:'',sourceByChat:{},counts:{},countAsked:null,analyzing:false,batch:null,checking:false,health:null,healthSelected:new Set(),limits:{},queries:{},queueLayer:'all',detail:null};
- let view;
- const note=message=>{ui.status=message;ui.statusDetail=null;ui.statusOpen=false;view?.drawStatus();};
- ui.note=note;
- const send=(type,extra={},meta={})=>{const requestId=uuid();pending.set(requestId,{...meta,epoch,type,sequence:++serial});ctx.sendToBackend({requestId,type,chatId,revision:state?.revision,...extra});};
- // Host confirmation dialog (Lumiverse 1.2.5 ctx.ui.showConfirm); dismissing it cancels.
- const confirm=async options=>{
-  if(typeof ctx.ui.showConfirm==='function'){try{return (await ctx.ui.showConfirm(options))?.confirmed===true;}catch{return false;}}
-  return typeof globalThis.confirm==='function'?!!globalThis.confirm(options.message):true;
- };
- view=createView(root,{send,get:()=>({chatId,state,recovery,epoch}),ui,confirm});
- const offMessage=ctx.onBackendMessage(reply=>{
-  // Automatic analysis finished in the background: refresh the open chat only.
-  if(reply?.event==='autoAnalysis'&&!reply.requestId){if(alive&&reply.chatId&&reply.chatId===chatId){ui.auto=reply.auto||null;send('load');}return;}
-  const p=pending.get(reply.requestId);pending.delete(reply.requestId);
-  if(!alive||!p||p.epoch!==epoch)return;
-  // Scene chronicle requests: the chronicle view rides along with the vault state.
-  if(p.scene){
-   if(reply.ok){
-    if(reply.state&&(!state||reply.state.revision>=state.revision)){accepted=Math.max(accepted,p.sequence);chatId=reply.chatId;state=reply.state;recovery=false;}
-    if(reply.chronicle&&reply.chatId===chatId)ui.chronicle={...reply.chronicle,chatId:reply.chatId};
-   }
-   if(!p.after?.(reply)&&!(reply.ok&&p.type==='sceneLoad'&&!reply.notice))ui.status=reply.ok?(reply.notice||'완료'):reply.error;
-   view.render();return;
-  }
-  // A reply in a multi-range run records that range and sends the next one first, so
-  // a failed or stale reply never stops the run.
-  const batch=p.type==='analyze'&&!!p.batch&&ui.batch?.id===p.batch;
-  if(p.type==='analyze'&&!batch)ui.analyzing=false;
-  if(p.type==='health')ui.checking=false;
-  if(batch)view.batchStep(reply);
-  if(!reply.ok){if(!batch)note(reply.error);if(['analyze','health'].includes(p.type))view.render();return;}
-  if(!reply.recovery&&state&&reply.state.revision<state.revision&&!['reset','restoreBackup'].includes(p.type)){if(batch)view.render();return;}
-  if(p.sequence<accepted&&(reply.recovery||state&&reply.state?.revision===state.revision)){if(batch)view.render();return;}
-  accepted=Math.max(accepted,p.sequence);chatId=reply.chatId;state=reply.state;recovery=!!reply.recovery;ui.injection=reply.injection||null;
-  if(Number.isSafeInteger(reply.total)&&Array.isArray(reply.hidden))ui.counts[reply.chatId]={total:reply.total,hidden:reply.hidden.filter(Number.isSafeInteger)};
-  if(reply.connections)ui.connections=reply.connections;
-  if(reply.loom&&typeof reply.loom.enabled==='boolean')ui.loom={enabled:reply.loom.enabled,chars:Number.isSafeInteger(reply.loom.chars)?reply.loom.chars:0};
-  if(reply.auto){ui.auto=reply.auto;if(reply.auto.enabled&&!ui.connection){ui.connection=reply.auto.connection;ui.mode=reply.auto.mode;}}
-  if('health' in reply){const prev=ui.health,h=reply.health||null;ui.health=h;
-   const open=(h?.proposals||[]).filter(x=>!x.conflict).map(x=>x.id);
-   ui.healthSelected=new Set(h&&prev&&prev.at===h.at?open.filter(id=>ui.healthSelected.has(id)):open);}
-  if(reply.json){ui.transfer=reply.json;ui.tab='settings';}
-  if(reply.saved){ui.editor=null;if(p.type==='analyze'&&!batch)ui.tab='overview';}
-  if(p.type==='health'&&reply.health)ui.tab='overview';
-  if(['reset','restoreBackup'].includes(p.type)){epoch++;pending.clear();ui.analyzing=false;ui.batch=null;ui.selected.clear();ui.editor=null;ui.limits={};ui.queries={};ui.queueLayer='all';ui.detail=null;ui.health=null;ui.healthSelected.clear();ui.checking=false;}
-  if(!batch)ui.status=reply.notice||(reply.saved?'저장 완료':reply.output||'불러오기 완료');
-  view.render();
- });
- const offSwitch=ctx.events.on('CHAT_SWITCHED',p=>{
-  epoch++;chatId=p.chatId||null;state=null;recovery=false;pending.clear();
-  ui.countAsked=null;ui.analyzing=false;ui.batch=null;ui.selected.clear();ui.editor=null;ui.limits={};ui.queries={};ui.queueLayer='all';ui.detail=null;ui.transfer='';ui.status='';ui.injection=null;ui.auto=null;ui.loom=null;ui.health=null;ui.healthSelected.clear();ui.checking=false;
-  ui.chronicle=null;ui.sceneBatch=null;ui.sceneEdit=null;ui.sceneOpen=null;ui.sceneSelected=null;ui.sceneAsked=null;ui.sceneSettings={};
-  view.render();if(chatId)send('load');
- });
- view.render();send('load');
- return ()=>{alive=false;epoch++;pending.clear();offMessage();offSwitch();root.replaceChildren();tab.destroy();};
+import { installShim } from './shim.js';
+import { runOriginal, ORIGINAL_CSS } from './original.generated.js';
+
+export function setup(ctx, { win = globalThis.window, doc = globalThis.document } = {}) {
+    const activeId = () => { try { const c = ctx.getActiveChat?.(); if (c && typeof c.chatId === 'string') return c.chatId; } catch { /* older host */ } try { return ctx.state?.get?.('chat.active')?.chatId || ''; } catch { return ''; } };
+    const syncKey = () => { try { const id = activeId(); if (id) win.localStorage.setItem('marinara-active-chat-id', id); } catch { /* optional */ } };   // the original's "chat on screen"
+    const shim = installShim(ctx, { win, activeChatId: activeId });
+    const style = doc.createElement('style');
+    style.textContent = ORIGINAL_CSS;
+    (doc.head || doc.documentElement).append(style);
+
+    let run = null, runFor = '', timer = null, alive = true;
+    const mount = () => { syncKey(); runFor = activeId(); run = shim.createMarinara(); runOriginal(run.marinara); };   // the pinned original, byte-identical
+    const modalOpen = () => { const r = doc.getElementById('mmc-root-v1'); return !!r && !r.hidden; };
+    // The original auto-processes only its selected chat. On a chat switch re-run it so it selects the active one (same as opening the vault there).
+    const onSwitch = () => {
+        clearTimeout(timer);
+        if (!alive || activeId() === runFor) return;
+        if (modalOpen()) { timer = setTimeout(onSwitch, 2000); return; }   // never tear the original down under an open screen
+        run?.runCleanups(); mount();
+    };
+    mount();
+    const offs = [];
+    for (const ev of ['CHAT_SWITCHED', 'CHAT_CHANGED']) { try { const o = ctx.events?.on?.(ev, () => { timer = setTimeout(onSwitch, 0); }); if (typeof o === 'function') offs.push(o); } catch { /* optional */ } }
+    try { const o = ctx.state?.subscribe?.('chat.active', () => { timer = setTimeout(onSwitch, 0); }); if (typeof o === 'function') offs.push(o); } catch { /* optional */ }
+    return () => { alive = false; clearTimeout(timer); offs.forEach(o => { try { o(); } catch { /* ignore */ } }); run?.runCleanups(); shim.dispose(); style.remove(); };
 }

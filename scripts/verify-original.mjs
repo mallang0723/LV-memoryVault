@@ -7,7 +7,7 @@ export const PINS = {
     'vendor/original/extension.css': '34de20009edf869f7af1d85ba88045118426d091b7dc5458d4cec19add1fa9f7',
 };
 const sha = f => createHash('sha256').update(readFileSync(f)).digest('hex');
-export function verify(root = new URL('../../', import.meta.url).pathname) {
+export function verify(root = new URL("../", import.meta.url).pathname) {
     return Object.entries(PINS).flatMap(([f, pin]) => !existsSync(root + f) ? [`${f}: missing`] : sha(root + f) !== pin ? [`${f}: sha256 mismatch`] : []);
 }
 if (process.argv[1]?.endsWith('verify-original.mjs')) { const bad = verify(); console.log(JSON.stringify({ ok: !bad.length, bad })); process.exit(bad.length ? 1 : 0); }

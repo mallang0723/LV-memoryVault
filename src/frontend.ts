@@ -1,1 +1,1 @@
-export {setup} from './frontend.js';
+export { setup } from './frontend.js';

@@ -3,3 +3,4 @@
 node_modules/
 context/
 publish/
+src/original.generated.js
