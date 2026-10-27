@@ -242,7 +242,7 @@ var PANEL_CSS = `
 #${ID} label.mvx-check input{width:24px;height:24px;flex:none}
 #${ID} .mvx-note{background:var(--warnbg);color:var(--warn);border-radius:10px;padding:10px 12px;font-size:15px}
 #${ID} .mvx-ok{color:var(--ok);font-weight:600}
-#${ID} textarea.mvx-text{width:100%;height:160px;font:13px/1.4 ui-monospace,monospace;background:var(--soft);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:8px}
+#${ID} textarea.mvx-text{width:100%;height:160px;font:15px/1.4 ui-monospace,monospace;background:var(--soft);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:8px}
 #${TOAST}{position:fixed;left:12px;right:12px;bottom:76px;z-index:2147483001;display:flex;justify-content:center;pointer-events:none}
 #${TOAST} div{background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:12px;padding:10px 14px;max-width:520px;box-shadow:0 6px 24px rgba(0,0,0,.35);pointer-events:auto}
 #${TOAST} small{display:block;font-size:14px;color:var(--mute)}
@@ -494,6 +494,106 @@ function createPanel(ctx, { request, activeChatId = () => "" }, { win = globalTh
       clearTimeout(toastTimer);
     }
   };
+}
+
+// src/host-theme.js
+var SEL = ["#mmc-root-v1", ".mmc-launcher", ".mmc-toast"].map((s) => `${s}[data-mmc-theme="marinara"]`).join(",");
+var num = (c) => (String(c).match(/-?[\d.]+(?:e-?\d+)?/g) || []).map(Number);
+function parse(c) {
+  const n = num(c);
+  if (n.length < 3)
+    return null;
+  const k = /^color\(/.test(c) ? 255 : 1;
+  return { r: n[0] * k, g: n[1] * k, b: n[2] * k, a: n[3] === undefined ? 1 : n[3] };
+}
+var over = (c, b) => ({ r: c.r * c.a + b.r * (1 - c.a), g: c.g * c.a + b.g * (1 - c.a), b: c.b * c.a + b.b * (1 - c.a), a: 1 });
+var lum2 = (c) => {
+  const f = (v) => {
+    v /= 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+};
+var contrast = (a, b) => {
+  const x = lum2(a), y = lum2(b);
+  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+};
+var css = (c) => `rgb(${Math.round(c.r)} ${Math.round(c.g)} ${Math.round(c.b)})`;
+var WHITE = { r: 255, g: 255, b: 255, a: 1 };
+var BLACK = { r: 20, g: 18, b: 32, a: 1 };
+function readable(fg, surfaces, min = 4.6) {
+  const list = [].concat(surfaces);
+  const dark = lum2(list[0]) < 0.4;
+  let c = fg, i = 0;
+  while (list.some((b) => contrast(c, b) < min) && i++ < 64) {
+    const d = dark ? 6 : -6;
+    c = { ...c, r: Math.max(0, Math.min(255, c.r + d)), g: Math.max(0, Math.min(255, c.g + d)), b: Math.max(0, Math.min(255, c.b + d)) };
+  }
+  return c;
+}
+var mixc = (a, b, p) => ({ r: a.r * p + b.r * (1 - p), g: a.g * p + b.g * (1 - p), b: a.b * p + b.b * (1 - p), a: 1 });
+function installHostTheme(win, doc) {
+  const style = doc.createElement("style");
+  style.id = "mvx-host-theme";
+  (doc.head || doc.documentElement).append(style);
+  let timer = null, observer = null, last = "";
+  function resolve(varName, fallback) {
+    try {
+      const p = doc.createElement("span");
+      p.style.cssText = `position:absolute;visibility:hidden;color:var(${varName},${fallback})`;
+      doc.body.append(p);
+      const c = parse(win.getComputedStyle(p).color);
+      p.remove();
+      return c;
+    } catch {
+      return null;
+    }
+  }
+  function update() {
+    try {
+      if (!win.getComputedStyle)
+        return;
+      const deep = resolve("--lumiverse-bg-deep", "#faf8ff") || { r: 250, g: 248, b: 255, a: 1 };
+      deep.a = 1;
+      const bg = over(resolve("--lumiverse-bg", "#faf8ff") || deep, deep);
+      const card = over(resolve("--lumiverse-bg-elevated", "#ffffff") || bg, bg);
+      const dark = lum2(bg) < 0.4;
+      const fg = readable(over(resolve("--lumiverse-text", "#1a1025") || BLACK, bg), [bg, card], 7);
+      const sunk = mixc(bg, fg, 0.9), paper2 = mixc(card, fg, 0.94);
+      const muted = readable(over(resolve("--lumiverse-text-muted", "#5d5c75") || fg, card), [bg, card, sunk, paper2, mixc(bg, fg, 0.8)]);
+      const border = over(resolve("--lumiverse-border", "rgba(128,128,128,.3)") || { r: 128, g: 128, b: 128, a: 0.3 }, card);
+      const ink = dark ? BLACK : WHITE;
+      let primary = over(resolve("--lumiverse-primary", "#5b5fb5") || { r: 91, g: 95, b: 181, a: 1 }, bg), n = 0;
+      while ((contrast(ink, primary) < 4.7 || contrast(primary, card) < 4.6 || contrast(primary, bg) < 4.6 || contrast(primary, mixc(primary, card, 0.15)) < 4.6) && n++ < 64) {
+        const d = dark ? 5 : -5;
+        primary = { ...primary, r: Math.max(0, Math.min(255, primary.r + d)), g: Math.max(0, Math.min(255, primary.g + d)), b: Math.max(0, Math.min(255, primary.b + d)) };
+      }
+      const accentText = primary;
+      const tone = { ok: dark ? { r: 126, g: 224, b: 160, a: 1 } : { r: 26, g: 102, b: 68, a: 1 }, warn: dark ? { r: 255, g: 207, b: 138, a: 1 } : { r: 138, g: 75, b: 0, a: 1 }, bad: dark ? { r: 255, g: 154, b: 147, a: 1 } : { r: 179, g: 38, b: 30, a: 1 }, hold: dark ? { r: 214, g: 201, b: 150, a: 1 } : { r: 107, g: 93, b: 50, a: 1 } };
+      const body = `--background:${css(bg)};--card:${css(card)};--foreground:${css(fg)};--muted-foreground:${css(muted)};--border:${css(border)};--primary:${css(primary)};--primary-foreground:${css(ink)};--success:${css(tone.ok)};--destructive:${css(tone.bad)};--mv-warn:${css(tone.warn)};--mv-hold:${css(tone.hold)};--mv-wiki-link:${css(accentText)};--mv-wiki-head-ink:${css(fg)};color-scheme:${dark ? "dark" : "light"};`;
+      if (body !== last) {
+        last = body;
+        style.textContent = `${SEL}{${body}}`;
+      }
+    } catch {}
+  }
+  const later = () => {
+    clearTimeout(timer);
+    timer = setTimeout(update, 60);
+  };
+  update();
+  try {
+    if (win.MutationObserver) {
+      observer = new win.MutationObserver(later);
+      for (const n of [doc.documentElement, doc.body])
+        n && observer.observe(n, { attributes: true, attributeFilter: ["style", "class", "data-theme"] });
+    }
+  } catch {}
+  return { update, dispose() {
+    clearTimeout(timer);
+    observer?.disconnect();
+    style.remove();
+  } };
 }
 
 // src/original.generated.js
@@ -1333,6 +1433,39 @@ var ORIGINAL_CSS = `/* 기억 보관함 v2.0.0 · 전역 테마 하나(리본 �
 #mmc-root-v1 .mmc-bulk-actions .mmc-btn{flex:1 1 0;min-height:36px}}
 
 /* adapter overrides */
+/* Adapter overrides for the pinned original (appended after vendor/original/extension.css; the original file is never edited).
+   Goal: phone-safe reading and touch sizes - body text >= 15px, secondary >= 13px, touch targets >= 44px, contrast >= 4.5:1,
+   and every pane scrolls on short desktop windows. Only sizes/colours/overflow are touched; no structure. */
+
+/* type scale: the original's smallest steps were 10.5 / 11.5 / 12.5 / 13.5 px */
+#mmc-root-v1,.mmc-launcher,.mmc-toast{--t-2xs:calc(13px*var(--fs));--t-xs:calc(13px*var(--fs));--t-sm:calc(15px*var(--fs));--t-md:calc(15px*var(--fs));--t-lg:calc(16px*var(--fs))}
+.mmc-launcher span{font-size:13px}
+#mmc-root-v1 .mmc-tab em{font-size:13px;min-width:22px;height:22px;line-height:22px;top:0}
+#mmc-root-v1 .mmc-wiki-cite{font-size:.8em}
+
+/* touch targets */
+#mmc-root-v1 .mmc-btn,#mmc-root-v1 .mmc-btn.mmc-sm,#mmc-root-v1 .mmc-icon-btn,#mmc-root-v1 .mmc-sync,#mmc-root-v1 .mmc-mini,#mmc-root-v1 .mmc-filter,#mmc-root-v1 .mmc-seg>label,#mmc-root-v1 .mmc-pill,#mmc-root-v1 .mmc-searchbox,#mmc-root-v1 .mmc-stepper button,#mmc-root-v1 .mmc-wiki-actions>button,#mmc-root-v1 .mmc-wiki-more>summary,#mmc-root-v1 .mmc-bulk-actions .mmc-btn,#mmc-root-v1 .mmc-wiki-cat,#mmc-root-v1 .mmc-ticket-main,#mmc-root-v1 .mmc-tab{min-height:44px}
+#mmc-root-v1 .mmc-icon-btn{min-width:44px}
+#mmc-root-v1 select,#mmc-root-v1 input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=hidden]),#mmc-root-v1 .mmc-element-range input,#mmc-root-v1 .mmc-wiki-side-tools select,#mmc-root-v1 .mmc-episode-fact-edit select,#mmc-root-v1 .mmc-episode-fact-edit input{min-height:44px;font-size:max(15px,var(--t-md))}
+#mmc-root-v1 textarea{font-size:max(15px,var(--t-md))}
+#mmc-root-v1 .mmc-link{min-height:44px;display:inline-flex;align-items:center}
+#mmc-root-v1 .mmc-check,#mmc-root-v1 .mmc-check.mmc-pin-check{min-width:44px;min-height:44px}
+#mmc-root-v1 .mmc-type-chip,#mmc-root-v1 .mmc-chip{min-height:24px}
+#mmc-root-v1 .mmc-story select{min-height:44px}
+#mmc-root-v1 .mmc-story{min-height:56px}
+.mmc-launcher{min-width:44px;height:56px}
+#mmc-root-v1 .mmc-mini{font-size:15px}
+#mmc-root-v1 button:not(.mmc-wiki-cite),#mmc-root-v1 select{min-height:44px!important}
+
+/* contrast: the original's muted text colours were 3.2-4.1:1 on their own paper; darkened to >= 5:1 on every surface of the same theme */
+#mmc-root-v1,.mmc-launcher,.mmc-toast,#mmc-root-v1[data-mmc-theme="ribbon"],.mmc-launcher[data-mmc-theme="ribbon"],.mmc-toast[data-mmc-theme="ribbon"]{--mv-muted:#5d5c75}
+#mmc-root-v1[data-mmc-theme="rose"],.mmc-launcher[data-mmc-theme="rose"],.mmc-toast[data-mmc-theme="rose"]{--mv-muted:#6f5c62}
+#mmc-root-v1[data-mmc-theme="green"],.mmc-launcher[data-mmc-theme="green"],.mmc-toast[data-mmc-theme="green"]{--mv-muted:#56635f}
+#mmc-root-v1,.mmc-launcher,.mmc-toast,#mmc-root-v1[data-mmc-theme="ribbon"],#mmc-root-v1[data-mmc-theme="rose"],#mmc-root-v1[data-mmc-theme="green"],.mmc-launcher[data-mmc-theme],.mmc-toast[data-mmc-theme]{--mv-ok:#1a6644}
+.mmc-launcher span{font-size:15px}
+#mmc-root-v1 .mmc-btn.mmc-sm,#mmc-root-v1 .mmc-btn.mmc-sm span{font-size:15px}
+#mmc-root-v1 .mmc-theme-check{font-size:13px}
+#mmc-root-v1[data-mmc-theme="green"],.mmc-launcher[data-mmc-theme="green"],.mmc-toast[data-mmc-theme="green"]{--mv-accent:#00796b;--mv-wiki-head:#00796b}
 `;
 function runOriginal(marinara) {
   (() => {
@@ -1375,7 +1508,7 @@ function runOriginal(marinara) {
       { id: "ribbon", label: "리본 라일락", help: "차분한 기본 보라" },
       { id: "rose", label: "스토리 로즈", help: "로즈 먹색의 감성" },
       { id: "green", label: "아카이브 그린", help: "예전 위키 그린을 보관함 전체로" },
-      { id: "marinara", label: "마리나라 테마 따르기", help: "호스트 색에서 계산 · 밝음/어두움 자동" }
+      { id: "marinara", label: "루미버스 테마 따르기", help: "호스트 색에서 계산 · 밝음/어두움 자동" }
     ];
     const UI_THEME_IDS = UI_THEMES.map((row) => row.id);
     const TAB_IDS = ["overview", "promise", "thread", "anchor", "episode", "element", "wiki"];
@@ -8987,7 +9120,7 @@ ${JSON.stringify(rows, null, 2)}
       <section><b>기억 건강검진</b><p>원할 때만 모델을 호출해 중복·모순·오래된 상태·끝난 사건·완료된 약속·지나치게 긴 기억을 점검합니다. 새 사실을 임의로 추가하지 않고 정리 후보만 제안합니다.</p></section>
       <section><b>로컬 사용</b><p>모델 호출 없이 최근 대화나 순정 요약을 편집 초안으로 가져와 직접 정리할 수 있습니다.</p></section>
       <section><b>안전장치</b><p>모델 후보는 사용자가 선택한 항목만 반영합니다. RP 소유권이 맞지 않는 기억은 자동 로드·주입·동기화하지 않으며, 전용 로어북에는 주입되지 않는 구조화 백업을 보관합니다. 원본 RP 메시지와 순정 요약은 수정하지 않습니다.</p></section>
-      <section><b>테마 하나로 전체 색 맞춤</b><p>리본 라일락 · 스토리 로즈 · 아카이브 그린 · 마리나라 테마 따르기 중 하나를 고르면 보관함 전체와 이야기 위키가 같은 색으로 바뀝니다. 위키만 따로 색이 달라지지 않습니다. 현재 사용자 폰트를 따르고, 보관함 안 글자 크기는 따로 조절할 수 있습니다.</p></section>
+      <section><b>테마 하나로 전체 색 맞춤</b><p>리본 라일락 · 스토리 로즈 · 아카이브 그린 · 루미버스 테마 따르기 중 하나를 고르면 보관함 전체와 이야기 위키가 같은 색으로 바뀝니다. 위키만 따로 색이 달라지지 않습니다. 현재 사용자 폰트를 따르고, 보관함 안 글자 크기는 따로 조절할 수 있습니다.</p></section>
     </div>`;
     }
     function helpLayer() {
@@ -11293,6 +11426,7 @@ function setup(ctx, { win = globalThis.window, doc = globalThis.document } = {})
   const style = doc.createElement("style");
   style.textContent = ORIGINAL_CSS;
   (doc.head || doc.documentElement).append(style);
+  const hostTheme = installHostTheme(win, doc);
   let run = null, runFor = "", timer = null, alive = true;
   const mount = () => {
     syncKey();
@@ -11344,6 +11478,7 @@ function setup(ctx, { win = globalThis.window, doc = globalThis.document } = {})
     });
     run?.runCleanups();
     guard.dispose();
+    hostTheme.dispose();
     panel.dispose();
     shim.dispose();
     style.remove();

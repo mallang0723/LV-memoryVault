@@ -1,7 +1,9 @@
 // Fake Spindle host + in-process channel between a backend `api` and a frontend `ctx`.
-export function createFakeHost({ modelReply = '[]' } = {}) {
-    const chat = { id: 'chat1', character_id: 'char1', name: '테스트 RP', metadata: {}, created_at: 1700000000, updated_at: 1700000000 };
+export function createFakeHost({ modelReply = '[]', chatId = 'chat1' } = {}) {
+    const chat = { id: chatId, character_id: 'char1', name: '테스트 RP', metadata: {}, created_at: 1700000000, updated_at: 1700000000 };
     const messages = [];
+    const chats = new Map([[chat.id, chat]]), msgsByChat = new Map([[chat.id, messages]]);
+    const addChat = (id, extra = {}) => { const c = { id, character_id: 'char1', name: `RP ${id}`, metadata: {}, created_at: 1700000100, updated_at: 1700000100, ...extra }; chats.set(id, c); msgsByChat.set(id, []); return c; };
     const books = new Map(), entries = new Map(), store = new Map();
     let seq = 0;
     const handlers = { on: {}, frontend: null };
@@ -16,11 +18,11 @@ export function createFakeHost({ modelReply = '[]' } = {}) {
         onFrontendMessage(fn) { handlers.frontend = fn; return () => { handlers.frontend = null; }; },
         sendToFrontend(msg) { toFront.push(msg); queueMicrotask(() => frontListener?.(msg)); },
         chats: {
-            list: async o => page([chat], o),
-            get: async id => (id === chat.id ? structuredClone(chat) : null),
-            update: async (id, input) => { calls.chatsUpdate.push(structuredClone(input)); if (input.metadata) chat.metadata = structuredClone(input.metadata); if (input.name) chat.name = input.name; return structuredClone(chat); },
+            list: async o => page([...chats.values()], o),
+            get: async id => (chats.has(id) ? structuredClone(chats.get(id)) : null),
+            update: async (id, input) => { const c = chats.get(id); calls.chatsUpdate.push(structuredClone(input)); if (input.metadata) c.metadata = structuredClone(input.metadata); if (input.name) c.name = input.name; return structuredClone(c); },
         },
-        chat: { getMessages: async () => structuredClone(messages) },
+        chat: { getMessages: async id => structuredClone(msgsByChat.get(id) || []) },
         characters: { get: async id => ({ id, name: id === 'char1' ? '하나' : id }) },
         connections: { list: async () => [{ id: 'conn1', name: 'Mock', provider: 'openai', model: 'mock-1', is_default: true }] },
         generate: { quiet: async req => { calls.generate.push(req); return { content: typeof modelReply === 'function' ? modelReply(req) : modelReply }; } },
@@ -45,10 +47,10 @@ export function createFakeHost({ modelReply = '[]' } = {}) {
     const ctx = {
         onBackendMessage(fn) { frontListener = fn; return () => { frontListener = null; }; },
         sendToBackend(payload) { handlers.frontend?.(payload, 'user1'); },
-        getActiveChat: () => ({ chatId: 'chat1' }),
+        getActiveChat: () => ({ chatId }),
         events: { on: () => () => {} },
     };
     // backend replies go through sendToFrontend(msg, userId, opts): same queue
-    const addTurns = n => { for (let i = 0; i < n; i++) { const base = messages.length; messages.push({ id: `m${base}`, index_in_chat: base, is_user: true, role: 'user', name: '나', content: `사용자 발화 ${base}` , send_date: 1700000000 + base }); messages.push({ id: `m${base + 1}`, index_in_chat: base + 1, is_user: false, role: 'assistant', name: '하나', content: `하나의 답 ${base + 1}: 한강에서 만나기로 약속했다`, send_date: 1700000000 + base + 1 }); } };
-    return { api, ctx, chat, messages, books, entries, store, calls, handlers, toFront, addTurns };
+    const addTurns = (n, cid = chatId) => { const messages = msgsByChat.get(cid); for (let i = 0; i < n; i++) { const base = messages.length; messages.push({ id: `m${base}`, index_in_chat: base, is_user: true, role: 'user', name: '나', content: `사용자 발화 ${base}` , send_date: 1700000000 + base }); messages.push({ id: `m${base + 1}`, index_in_chat: base + 1, is_user: false, role: 'assistant', name: '하나', content: `하나의 답 ${base + 1}: 한강에서 만나기로 약속했다`, send_date: 1700000000 + base + 1 }); } };
+    return { api, ctx, chat, chats, addChat, messages, books, entries, store, calls, handlers, toFront, addTurns };
 }

@@ -1,0 +1,33 @@
+/* Adapter overrides for the pinned original (appended after vendor/original/extension.css; the original file is never edited).
+   Goal: phone-safe reading and touch sizes - body text >= 15px, secondary >= 13px, touch targets >= 44px, contrast >= 4.5:1,
+   and every pane scrolls on short desktop windows. Only sizes/colours/overflow are touched; no structure. */
+
+/* type scale: the original's smallest steps were 10.5 / 11.5 / 12.5 / 13.5 px */
+#mmc-root-v1,.mmc-launcher,.mmc-toast{--t-2xs:calc(13px*var(--fs));--t-xs:calc(13px*var(--fs));--t-sm:calc(15px*var(--fs));--t-md:calc(15px*var(--fs));--t-lg:calc(16px*var(--fs))}
+.mmc-launcher span{font-size:13px}
+#mmc-root-v1 .mmc-tab em{font-size:13px;min-width:22px;height:22px;line-height:22px;top:0}
+#mmc-root-v1 .mmc-wiki-cite{font-size:.8em}
+
+/* touch targets */
+#mmc-root-v1 .mmc-btn,#mmc-root-v1 .mmc-btn.mmc-sm,#mmc-root-v1 .mmc-icon-btn,#mmc-root-v1 .mmc-sync,#mmc-root-v1 .mmc-mini,#mmc-root-v1 .mmc-filter,#mmc-root-v1 .mmc-seg>label,#mmc-root-v1 .mmc-pill,#mmc-root-v1 .mmc-searchbox,#mmc-root-v1 .mmc-stepper button,#mmc-root-v1 .mmc-wiki-actions>button,#mmc-root-v1 .mmc-wiki-more>summary,#mmc-root-v1 .mmc-bulk-actions .mmc-btn,#mmc-root-v1 .mmc-wiki-cat,#mmc-root-v1 .mmc-ticket-main,#mmc-root-v1 .mmc-tab{min-height:44px}
+#mmc-root-v1 .mmc-icon-btn{min-width:44px}
+#mmc-root-v1 select,#mmc-root-v1 input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=hidden]),#mmc-root-v1 .mmc-element-range input,#mmc-root-v1 .mmc-wiki-side-tools select,#mmc-root-v1 .mmc-episode-fact-edit select,#mmc-root-v1 .mmc-episode-fact-edit input{min-height:44px;font-size:max(15px,var(--t-md))}
+#mmc-root-v1 textarea{font-size:max(15px,var(--t-md))}
+#mmc-root-v1 .mmc-link{min-height:44px;display:inline-flex;align-items:center}
+#mmc-root-v1 .mmc-check,#mmc-root-v1 .mmc-check.mmc-pin-check{min-width:44px;min-height:44px}
+#mmc-root-v1 .mmc-type-chip,#mmc-root-v1 .mmc-chip{min-height:24px}
+#mmc-root-v1 .mmc-story select{min-height:44px}
+#mmc-root-v1 .mmc-story{min-height:56px}
+.mmc-launcher{min-width:44px;height:56px}
+#mmc-root-v1 .mmc-mini{font-size:15px}
+#mmc-root-v1 button:not(.mmc-wiki-cite),#mmc-root-v1 select{min-height:44px!important}
+
+/* contrast: the original's muted text colours were 3.2-4.1:1 on their own paper; darkened to >= 5:1 on every surface of the same theme */
+#mmc-root-v1,.mmc-launcher,.mmc-toast,#mmc-root-v1[data-mmc-theme="ribbon"],.mmc-launcher[data-mmc-theme="ribbon"],.mmc-toast[data-mmc-theme="ribbon"]{--mv-muted:#5d5c75}
+#mmc-root-v1[data-mmc-theme="rose"],.mmc-launcher[data-mmc-theme="rose"],.mmc-toast[data-mmc-theme="rose"]{--mv-muted:#6f5c62}
+#mmc-root-v1[data-mmc-theme="green"],.mmc-launcher[data-mmc-theme="green"],.mmc-toast[data-mmc-theme="green"]{--mv-muted:#56635f}
+#mmc-root-v1,.mmc-launcher,.mmc-toast,#mmc-root-v1[data-mmc-theme="ribbon"],#mmc-root-v1[data-mmc-theme="rose"],#mmc-root-v1[data-mmc-theme="green"],.mmc-launcher[data-mmc-theme],.mmc-toast[data-mmc-theme]{--mv-ok:#1a6644}
+.mmc-launcher span{font-size:15px}
+#mmc-root-v1 .mmc-btn.mmc-sm,#mmc-root-v1 .mmc-btn.mmc-sm span{font-size:15px}
+#mmc-root-v1 .mmc-theme-check{font-size:13px}
+#mmc-root-v1[data-mmc-theme="green"],.mmc-launcher[data-mmc-theme="green"],.mmc-toast[data-mmc-theme="green"]{--mv-accent:#00796b;--mv-wiki-head:#00796b}

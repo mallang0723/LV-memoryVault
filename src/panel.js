@@ -26,7 +26,7 @@ export const PANEL_CSS = `
 #${ID} label.mvx-check input{width:24px;height:24px;flex:none}
 #${ID} .mvx-note{background:var(--warnbg);color:var(--warn);border-radius:10px;padding:10px 12px;font-size:15px}
 #${ID} .mvx-ok{color:var(--ok);font-weight:600}
-#${ID} textarea.mvx-text{width:100%;height:160px;font:13px/1.4 ui-monospace,monospace;background:var(--soft);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:8px}
+#${ID} textarea.mvx-text{width:100%;height:160px;font:15px/1.4 ui-monospace,monospace;background:var(--soft);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:8px}
 #${TOAST}{position:fixed;left:12px;right:12px;bottom:76px;z-index:2147483001;display:flex;justify-content:center;pointer-events:none}
 #${TOAST} div{background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:12px;padding:10px 14px;max-width:520px;box-shadow:0 6px 24px rgba(0,0,0,.35);pointer-events:auto}
 #${TOAST} small{display:block;font-size:14px;color:var(--mute)}

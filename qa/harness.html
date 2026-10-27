@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>기억 보관함 QA</title>
+<link rel="icon" href="data:,">
+<style>
+/* Stand-ins for Lumiverse: the chat page and the input bar Extras menu. Host theme variables come from qa/host-themes.json. */
+:root{--lumiverse-bg-deep:rgba(10,8,18,1);--lumiverse-text:rgba(255,255,255,.9);--lumiverse-bg-elevated:rgba(35,30,48,.9);--lumiverse-border:rgba(147,112,219,.12)}
+html,body{margin:0;height:100%;background:var(--lumiverse-bg-deep);color:var(--lumiverse-text);font-family:system-ui,sans-serif}
+.chat{position:fixed;inset:0;padding:16px;color:#888;overflow:hidden}
+.composer{position:absolute;left:12px;right:12px;bottom:12px;min-height:48px;border:1px solid #666;border-radius:10px;display:flex;align-items:center;gap:8px;padding:0 12px}
+.composer .extras{margin-left:auto;min-width:44px;min-height:44px}
+#extras-menu{position:absolute;right:12px;bottom:64px;background:var(--lumiverse-bg-elevated);border:1px solid var(--lumiverse-border);border-radius:10px;display:none;flex-direction:column;min-width:180px;z-index:50}
+#extras-menu.on{display:flex}
+#extras-menu button{min-height:44px;text-align:left;background:none;border:0;color:var(--lumiverse-text);padding:0 12px;font-size:15px}
+</style>
+</head>
+<body>
+<div class="chat" id="chat">호스트 채팅 화면 (stand-in)</div>
+<div class="composer"><span>메시지 입력…</span><button class="extras" id="extras-btn" aria-label="Extras">⋯</button></div>
+<div id="extras-menu"></div>
+<script type="module" src="./harness.js"></script>
+</body>
+</html>
