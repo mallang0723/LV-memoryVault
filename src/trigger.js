@@ -1,30 +1,53 @@
-// The whole auto-run adapter: count user turns, every N turns synthesize ONE summaryEntry that the original's own
-// passive observer (fetch of /api/chats/:id -> metadata.summaryEntries) will see as "a new summary" and analyse.
-// No receipts / pause / backoff: if the original's analysis fails, the next trigger just adds another entry.
-export const EVERY_DEFAULT = 10;
-const MAX_ENTRIES = 40;
+// The whole auto-run adapter: every N user turns synthesize ONE summaryEntry (the raw text of those turns) that the original's own
+// passive observer (fetch of /api/chats/:id -> metadata.summaryEntries) sees as "a new summary" and analyses.
+// No receipts / pause / backoff: if the original's analysis fails, the next trigger sends the accumulated entries again.
+// State per chat is persisted (userStorage via `store`) so a restart does not lose the turn count or the entries.
+export const EVERY_DEFAULT = 10, EVERY_MIN = 3, EVERY_MAX = 100;
+const KEEP = 5, MAX_CHARS = 120_000;
+export const clampEvery = v => { const n = Math.trunc(Number(v)); return Number.isFinite(n) ? Math.min(EVERY_MAX, Math.max(EVERY_MIN, n)) : EVERY_DEFAULT; };
 
-export function createTrigger({ every = EVERY_DEFAULT, now = () => new Date().toISOString() } = {}) {
-    const entriesByChat = new Map();   // chatId -> summaryEntries[] (in memory; the original keeps its own "known" signatures)
-    const state = new Map();           // chatId -> { bucket, from }  (number of the first message not yet summarised)
+/** store: { load(chatId) -> Promise<state|null>, save(chatId, state) -> Promise }. every: number | () => number | Promise. */
+export function createTrigger({ every = EVERY_DEFAULT, store = null, now = () => new Date().toISOString() } = {}) {
+    const cache = new Map();   // chatId -> { lastUsers, from, entries[] }
+    const chains = new Map();  // chatId -> promise tail (turns of one chat are processed one at a time)
+    const getEvery = async () => clampEvery(typeof every === 'function' ? await every() : every);
+    const valid = s => s && Number.isFinite(s.lastUsers) && Number.isFinite(s.from) && Array.isArray(s.entries);
+    async function stateOf(chatId) {
+        if (cache.has(chatId)) return cache.get(chatId);
+        let s = null; try { s = store ? await store.load(chatId) : null; } catch { /* unreadable: baseline again */ }
+        if (!valid(s)) s = null;
+        if (s) cache.set(chatId, s);
+        return s;
+    }
+    const persist = async (chatId, s) => { cache.set(chatId, s); try { await store?.save(chatId, s); } catch { /* next turn saves again */ } };
+    async function step(chatId, rows) {
+        const users = rows.filter(r => r.role === 'user').length, last = rows.at(-1)?.number ?? 0;
+        let s = await stateOf(chatId);
+        if (!s) { await persist(chatId, { lastUsers: users, from: last + 1, entries: [] }); return null; }   // first sight: baseline only
+        if (users < s.lastUsers) { s = { ...s, lastUsers: users, from: Math.min(s.from, last + 1) }; await persist(chatId, s); return null; }   // messages deleted / rolled back
+        if (users - s.lastUsers < await getEvery()) return null;
+        const slice = rows.filter(r => r.number >= s.from && r.role !== 'system' && !r.extra?.hidden && String(r.content || '').trim());
+        const next = { lastUsers: users, from: last + 1, entries: s.entries };
+        if (!slice.length) { await persist(chatId, next); return null; }
+        let content = slice.map(r => `${r.role === 'user' ? '[사용자]' : `[${r.name || '캐릭터'}]`} ${r.content}`).join('\n\n');
+        if (content.length > MAX_CHARS) content = content.slice(content.length - MAX_CHARS);   // keep the newest text
+        const turns = slice.filter(r => r.role === 'user').length;
+        const entry = { id: `mv-${chatId.slice(0, 8)}-${slice[0].number}-${slice.at(-1).number}`, title: `최근 ${turns}턴 대화 (#${slice[0].number}–#${slice.at(-1).number})`, content, enabled: true, origin: 'memory-cabinet-adapter', createdAt: now(), updatedAt: now() };
+        next.entries = [...s.entries.filter(e => e.id !== entry.id), entry].slice(-KEEP);
+        await persist(chatId, next);
+        return entry;
+    }
     return {
-        entries: chatId => entriesByChat.get(chatId) || [],
-        /** rows: [{number, role, name, content}] oldest first. Returns the new entry or null (baseline / not yet N turns). */
+        /** entries synthesized so far, from memory only (cheap; used for chat lists) */
+        cached: chatId => cache.get(chatId)?.entries || [],
+        /** entries for one chat, loading the persisted state if needed */
+        async entries(chatId) { return (await stateOf(chatId))?.entries || []; },
+        /** rows: [{number, role, name, content, extra}] oldest first. Resolves to the new entry, or null (baseline / not yet N turns). */
         onGenerationEnded(chatId, rows) {
-            const users = rows.filter(r => r.role === 'user').length;
-            const bucket = Math.floor(users / every);
-            const st = state.get(chatId);
-            if (!st) { state.set(chatId, { bucket, from: (rows.at(-1)?.number ?? 0) + 1 }); return null; }   // first sight: baseline only
-            if (bucket <= st.bucket) { st.bucket = Math.min(st.bucket, bucket); return null; }
-            const slice = rows.filter(r => r.number >= st.from && r.role !== 'system');
-            st.bucket = bucket; st.from = (rows.at(-1)?.number ?? 0) + 1;
-            if (!slice.length) return null;
-            const content = slice.map(r => `${r.role === 'user' ? '[사용자]' : `[${r.name || '캐릭터'}]`} ${r.content}`).join('\n\n');
-            const entry = { id: `mv-${chatId.slice(0, 8)}-${slice[0].number}-${slice.at(-1).number}`, title: `최근 ${users - (bucket - 1) * every}턴 대화 (#${slice[0].number}–#${slice.at(-1).number})`, content, enabled: true, origin: 'memory-cabinet-adapter', createdAt: now(), updatedAt: now() };
-            const list = entriesByChat.get(chatId) || [];
-            list.push(entry);
-            entriesByChat.set(chatId, list.slice(-MAX_ENTRIES));
-            return entry;
+            const run = (chains.get(chatId) || Promise.resolve()).catch(() => {}).then(() => step(chatId, rows));
+            chains.set(chatId, run);
+            run.catch(() => {}).finally(() => { if (chains.get(chatId) === run) chains.delete(chatId); });
+            return run;
         },
     };
 }

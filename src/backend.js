@@ -1,61 +1,149 @@
-// Backend entry: router (frontend RPC) + host adapter + the trigger counter.
+// Backend entry: router (frontend RPC) + host adapter + the turn trigger + the 0.4.x migration routes.
 import { createRouter } from './router.js';
 import { createHost } from './host.js';
-import { createTrigger } from './trigger.js';
-import { mapOldToOriginal, buildBackup } from './migrate.js';
+import { createTrigger, clampEvery, EVERY_DEFAULT, EVERY_MIN, EVERY_MAX } from './trigger.js';
+import { mapOldToOriginal, buildBackup, IMPORT_LAYERS } from './migrate.js';
+import manifest from '../spindle.json' with { type: 'json' };
+
+const PERMS = ['chats', 'chat_mutation', 'generation', 'world_books', 'characters'];
+const safeId = id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id);
+const fail = (message, status) => Object.assign(new Error(message), { status });
 
 export function start(api, options = {}) {
-    const trigger = createTrigger(options.trigger);
-    const host = createHost(api, { summaries: trigger });
-    const router = createRouter();
     const ui = userId => `ui-${userId}.json`;
-    router.add('GET', 'connections', ({ userId }) => host.connections(userId));
-    router.add('GET', 'chats', ({ userId }) => host.chatsList(userId));
-    router.add('GET', 'chats/:id', ({ userId, params }) => host.chat(userId, params.id));
-    router.add('GET', 'chats/:id/messages', ({ userId, params, query }) => host.messages(userId, params.id, Number(query.limit) || 0));
-    router.add('PATCH', 'chats/:id/metadata', ({ userId, params, body }) => host.patchMetadata(userId, params.id, body));
-    router.add('GET', 'chats/:id/advanced-memory', () => { throw Object.assign(new Error('고급 메모리는 이 호스트에 없습니다.'), { status: 404 }); });
-    router.add('GET', 'characters/:id', ({ userId, params }) => host.character(userId, params.id));
+    const read = (userId, path, fallback) => api.userStorage.getJson(path, { fallback, userId });
+    const write = (userId, path, value) => api.userStorage.setJson(path, value, { userId });
+    const log = (level, m) => { try { api.log?.[level]?.(`[memory-cabinet] ${m}`); } catch { /* ignore */ } };
+    const has = p => { try { return api.permissions?.has ? !!api.permissions.has(p) : true; } catch { return false; } };
+
+    // ---- adapter settings (NOT settings.json: that file belongs to 0.4.x and is read by the backup) ----
+    const everyOf = async userId => clampEvery((await read(userId, 'adapter-settings.json', {}))?.every ?? options.trigger?.every ?? EVERY_DEFAULT);
+    // ---- the turn trigger. Persisted per user + chat: trigger/<chatId>.json ----
+    const triggers = new Map();   // userId -> trigger (the persisted file path is per user already)
+    const triggerFor = userId => {
+        if (!triggers.has(userId)) triggers.set(userId, createTrigger({
+            every: () => everyOf(userId), now: options.trigger?.now,
+            store: { load: chatId => (safeId(chatId) ? read(userId, `trigger/${chatId}.json`, null) : null), save: (chatId, s) => (safeId(chatId) ? write(userId, `trigger/${chatId}.json`, s) : undefined) },
+        }));
+        return triggers.get(userId);
+    };
+    const hosts = new Map();
+    const hostFor = userId => {
+        if (!hosts.has(userId)) {
+            const t = triggerFor(userId);
+            hosts.set(userId, createHost(api, { summaries: { cached: id => t.cached(id), entries: id => t.entries(id) } }));
+        }
+        return hosts.get(userId);
+    };
+
+    const router = createRouter();
+    const h = fn => ctx => fn(hostFor(ctx.userId), ctx);
+    router.add('GET', 'connections', h((host, { userId }) => host.connections(userId)));
+    router.add('GET', 'chats', h((host, { userId }) => host.chatsList(userId)));
+    router.add('GET', 'chats/:id', h((host, { userId, params }) => host.chat(userId, params.id)));
+    router.add('GET', 'chats/:id/messages', h((host, { userId, params, query }) => host.messages(userId, params.id, Number(query.limit) || 0)));
+    router.add('PATCH', 'chats/:id/metadata', h((host, { userId, params, body }) => host.patchMetadata(userId, params.id, body)));
+    router.add('GET', 'chats/:id/advanced-memory', () => { throw fail('고급 메모리는 이 호스트에 없습니다.', 404); });
+    router.add('GET', 'characters/:id', h((host, { userId, params }) => host.character(userId, params.id)));
     router.add('GET', 'agents', () => []);
-    router.add('GET', 'lorebooks', ({ userId, query }) => host.lorebooks(userId, query.chatId));
-    router.add('POST', 'lorebooks', ({ userId, body }) => host.createBook(userId, body));
-    router.add('GET', 'lorebooks/:id', ({ userId, params }) => host.lorebook(userId, params.id));
-    router.add('PATCH', 'lorebooks/:id', ({ userId, params, body }) => host.patchBook(userId, params.id, body));
-    router.add('GET', 'lorebooks/:id/entries', ({ userId, params }) => host.entries(userId, params.id));
-    router.add('POST', 'lorebooks/:id/entries', ({ userId, params, body }) => host.createEntry(userId, params.id, body));
-    router.add('PATCH', 'lorebooks/:id/entries/:entryId', ({ userId, params, body }) => host.patchEntry(userId, params.id, params.entryId, body));
-    router.add('POST', 'generate/raw', async ({ userId, body }) => host.generate(userId, body));
-    router.add('GET', '_storage', ({ userId }) => api.userStorage.getJson(ui(userId), { fallback: {}, userId }));          // marinara.storage.get
-    router.add('POST', '_storage', async ({ userId, body }) => {                                                               // marinara.storage.patch
-        const cur = await api.userStorage.getJson(ui(userId), { fallback: {}, userId });
-        const next = { ...cur, ...(body?.patch || {}) };
-        await api.userStorage.setJson(ui(userId), next, { userId });
+    router.add('GET', 'lorebooks', h((host, { userId, query }) => host.lorebooks(userId, query.chatId)));
+    router.add('POST', 'lorebooks', h((host, { userId, body }) => host.createBook(userId, body)));
+    router.add('GET', 'lorebooks/:id', h((host, { userId, params }) => host.lorebook(userId, params.id)));
+    router.add('PATCH', 'lorebooks/:id', h((host, { userId, params, body }) => host.patchBook(userId, params.id, body)));
+    router.add('GET', 'lorebooks/:id/entries', h((host, { userId, params }) => host.entries(userId, params.id)));
+    router.add('POST', 'lorebooks/:id/entries', h((host, { userId, params, body }) => host.createEntry(userId, params.id, body)));
+    router.add('PATCH', 'lorebooks/:id/entries/:entryId', h((host, { userId, params, body }) => host.patchEntry(userId, params.id, params.entryId, body)));
+    router.add('POST', 'generate/raw', h(async (host, { userId, body }) => host.generate(userId, body)));
+    router.add('GET', '_storage', ({ userId }) => read(userId, ui(userId), {}));                                         // marinara.storage.get
+    router.add('POST', '_storage', async ({ userId, body }) => {                                                          // marinara.storage.patch
+        const next = { ...(await read(userId, ui(userId), {})), ...(body?.patch || {}) };
+        await write(userId, ui(userId), next);
         return next;
     });
-    // ---- 0.4.x data: backup (raw files) and one-time import into the original's memoryCabinetV1 (only chats that have no original data yet) ----
-    const old = async userId => {
-        const files = await api.userStorage.list('chats/', userId).catch(() => []);
+
+    // ---- adapter panel: status + settings ----
+    router.add('GET', '_adapter/status', async ({ userId }) => ({
+        version: manifest.version, every: await everyOf(userId), everyMin: EVERY_MIN, everyMax: EVERY_MAX, everyDefault: EVERY_DEFAULT,
+        permissions: Object.fromEntries(PERMS.map(p => [p, has(p)])), migrate: await migrateStatus(userId),
+    }));
+    router.add('POST', '_adapter/settings', async ({ userId, body }) => {
+        const cur = await read(userId, 'adapter-settings.json', {});
+        const next = { ...cur, every: clampEvery(body?.every ?? cur.every) };
+        await write(userId, 'adapter-settings.json', next);
+        return next;
+    });
+    // one tab wins the right to let the original observe a trigger (so two open tabs do not analyse the same turns twice)
+    const claimed = new Map();   // triggerId -> time
+    router.add('POST', '_trigger/claim', ({ body }) => {
+        const id = String(body?.id || '');
+        if (!id) return { ok: false };
+        const now = Date.now();
+        for (const [k, t] of claimed) if (now - t > 600_000) claimed.delete(k);
+        if (claimed.has(id)) return { ok: false };
+        claimed.set(id, now);
+        return { ok: true };
+    });
+
+    // ---- 0.4.x data: status, backup (raw files), one-time import into the original's memoryCabinetV1 ----
+    const MIG = 'migrate-state.json';
+    const canList = () => typeof api.userStorage?.list === 'function';
+    async function oldFiles(userId) {
+        if (!canList()) throw fail('이 루미버스 버전은 저장소 목록 조회를 지원하지 않아 옛 데이터를 찾을 수 없습니다.', 501);
         const chats = {};
-        for (const f of files) { const m = /^chats\/([^/]+)\/(data|auto|health)\.json$/.exec(f); if (m) (chats[m[1]] ||= {})[m[2]] = await api.userStorage.getJson(f, { fallback: null, userId }); }
+        const want = new Set();
+        const note = f => { const m = /^\/*(?:chats\/)?([A-Za-z0-9_-]+)\/(data|auto|health)\.json$/.exec(String(f)); if (m) want.add(`${m[1]}/${m[2]}`); };
+        for (const f of await api.userStorage.list('chats/', userId) || []) note(f);
+        // some hosts list one level only (chat folders): look inside each folder too
+        if (!want.size) for (const d of await api.userStorage.list('chats/', userId) || []) { const id = /^\/*(?:chats\/)?([A-Za-z0-9_-]+)\/?$/.exec(String(d))?.[1]; if (id) for (const f of await api.userStorage.list(`chats/${id}/`, userId) || []) note(`${id}/${String(f).split('/').pop()}`); }
+        for (const k of want) { const [id, kind] = k.split('/'); (chats[id] ||= {})[kind] = await read(userId, `chats/${id}/${kind}.json`, null); }
         return chats;
-    };
-    router.add('GET', '_migrate/backup', async ({ userId }) => buildBackup({ chats: await old(userId), settings: await api.userStorage.getJson('settings.json', { fallback: null, userId }).catch(() => null) }));
-    router.add('POST', '_migrate/apply', async ({ userId }) => {
-        const out = {};
-        for (const [chatId, files] of Object.entries(await old(userId))) {
+    }
+    async function migrateStatus(userId) {
+        const state = await read(userId, MIG, {});
+        let chats = 0, items = 0, importable = 0, error = null;
+        if (!canList()) error = 'unsupported';
+        else try {
+            for (const files of Object.values(await oldFiles(userId))) {
+                const list = files.data?.items || [];
+                if (!list.length) continue;
+                chats++; items += list.length; importable += list.filter(x => IMPORT_LAYERS.includes(x.layer)).length;
+            }
+        } catch (e) { error = String(e?.message || e); }
+        return { oldChats: chats, oldItems: items, importable, error, backedUpAt: state.backedUpAt || null, importedAt: state.importedAt || null, dismissed: !!state.dismissed, result: state.result || null };
+    }
+    router.add('GET', '_migrate/status', ({ userId }) => migrateStatus(userId));
+    router.add('GET', '_migrate/backup', async ({ userId }) => {
+        const chats = await oldFiles(userId);
+        for (const id of Object.keys(chats)) { try { const c = await api.chats.get(id, userId); if (c?.name) chats[id].name = c.name; } catch { /* chat gone: still backed up */ } }
+        const settings = await read(userId, 'settings.json', null).catch(() => null);
+        const st = await read(userId, MIG, {});
+        await write(userId, MIG, { ...st, backedUpAt: new Date().toISOString() });
+        return buildBackup({ chats, settings, version: '0.4.x' });
+    });
+    router.add('POST', '_migrate/dismiss', async ({ userId }) => { await write(userId, MIG, { ...(await read(userId, MIG, {})), dismissed: true }); return { ok: true }; });
+    router.add('POST', '_migrate/apply', async ({ userId, body }) => {
+        if (body?.confirmBackup !== true) throw fail('먼저 백업 파일을 저장했는지 확인해 주세요.', 400);
+        const st = await read(userId, MIG, {});
+        if (!st.backedUpAt) throw fail('백업을 한 번도 내려받지 않았습니다. 백업을 먼저 내려받으세요.', 400);
+        const host = hostFor(userId), out = {};
+        for (const [chatId, files] of Object.entries(await oldFiles(userId))) {
             if (!files.data?.items?.length) continue;
             const c = await api.chats.get(chatId, userId).catch(() => null);
             if (!c) { out[chatId] = { skipped: 'chat gone' }; continue; }
             if (c.metadata?.memoryCabinetV1?.items?.length) { out[chatId] = { skipped: 'already has original data' }; continue; }
             const { data, report } = mapOldToOriginal(files.data, { chatId });
+            if (!data.items.length) { out[chatId] = { skipped: 'nothing importable', ...report }; continue; }
             await host.patchMetadata(userId, chatId, { memoryCabinetV1: data });
             out[chatId] = report;
         }
+        await write(userId, MIG, { ...st, importedAt: new Date().toISOString(), result: { chats: Object.keys(out).length, imported: Object.values(out).reduce((n, r) => n + (r.items || 0), 0) } });
         return out;
     });
-    const disposers = [router.attach(api)];
 
-    // every Nth user turn: synthesize an entry, then tell the frontend to let the original observe /api/chats/:id
+    const disposers = [router.attach(api)];
+    if (!has('generation')) log('warn', 'generation 권한이 없어 자동 분석 트리거를 켤 수 없습니다 (수동 사용은 가능).');
+
+    // every Nth user turn: synthesize an entry, then tell the frontends to let the original observe /api/chats/:id
     const timers = new Set();
     try {
         disposers.push(api.on('GENERATION_ENDED', (payload, userId) => {
@@ -64,13 +152,16 @@ export function start(api, options = {}) {
             const t = setTimeout(async () => {
                 timers.delete(t);
                 try {
-                    const rows = await host.messages(userId, payload.chatId, 0);
-                    if (trigger.onGenerationEnded(payload.chatId, rows)) api.sendToFrontend({ event: 'mv-trigger', chatId: payload.chatId }, userId);
-                } catch (e) { api.log?.warn?.(`[memory-cabinet] trigger: ${e?.message || e}`); }   // no retry state: the next trigger covers it
+                    const rows = await hostFor(userId).messages(userId, payload.chatId, 0);
+                    const entry = await triggerFor(userId).onGenerationEnded(payload.chatId, rows);
+                    if (entry) api.sendToFrontend({ event: 'mv-trigger', chatId: payload.chatId, id: entry.id }, userId);
+                } catch (e) { log('warn', `trigger: ${e?.message || e}`); }   // no retry state: the next trigger covers it
             }, options.afterMs ?? 1500);
             timers.add(t);
         }));
-    } catch (e) { api.log?.warn?.(`[memory-cabinet] GENERATION_ENDED: ${e?.message || e}`); }
-    return () => { for (const t of timers) clearTimeout(t); for (const d of disposers) { try { d?.(); } catch { /* ignore */ } } };
+    } catch (e) { log('warn', `GENERATION_ENDED: ${e?.message || e}`); }
+    const stop = () => { for (const t of timers) clearTimeout(t); for (const d of disposers) { try { d?.(); } catch { /* ignore */ } } };
+    stop.router = router;   // for the contract test
+    return stop;
 }
 if (typeof spindle !== 'undefined') start(spindle);

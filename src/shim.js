@@ -10,8 +10,9 @@ function response(status, data) {
 
 export function installShim(ctx, { win = globalThis.window, activeChatId = () => '', timeoutMs = 60_000, slowMs = 330_000 } = {}) {
     const pending = new Map();
+    let onTrigger = null;
     const off = ctx.onBackendMessage(msg => {
-        if (msg?.event === 'mv-trigger') { try { if (typeof msg.chatId === 'string') void win.fetch(`/api/chats/${encodeURIComponent(msg.chatId)}`).catch(() => {}); } catch { /* next trigger */ } return; }
+        if (msg?.event === 'mv-trigger') { onTrigger?.(msg); return; }
         const p = msg && pending.get(msg.requestId);
         if (p) { pending.delete(msg.requestId); clearTimeout(p.timer); p.resolve(msg); }
     });
@@ -22,6 +23,13 @@ export function installShim(ctx, { win = globalThis.window, activeChatId = () =>
         signal?.addEventListener?.('abort', () => { if (pending.delete(requestId)) { clearTimeout(timer); reject(Object.assign(new Error('Aborted'), { name: 'AbortError' })); } }, { once: true });
         try { ctx.sendToBackend({ requestId, type: 'api', method, path, body }); } catch (e) { pending.delete(requestId); clearTimeout(timer); reject(e); }
     });
+    /** A trigger reaches every open tab of the user; only the tab showing that chat may ask, and only the first asker wins (backend-atomic claim). */
+    onTrigger = msg => {
+        if (typeof msg.chatId !== 'string' || (activeChatId() && activeChatId() !== msg.chatId)) return;
+        request('POST', '_trigger/claim', { id: msg.id || `${msg.chatId}:${Date.now()}` }).then(r => {
+            if (r?.ok && r.data?.ok) return win.fetch(`/api/chats/${encodeURIComponent(msg.chatId)}`);
+        }).catch(() => { /* the next trigger covers it */ });
+    };
     const shimFetch = async (input, init = {}) => {
         const url = typeof input === 'string' ? input : String(input?.url || input);
         const method = String(init?.method || 'GET').toUpperCase();
@@ -47,5 +55,5 @@ export function installShim(ctx, { win = globalThis.window, activeChatId = () =>
         };
         return { marinara, runCleanups() { for (const f of cleanups.splice(0)) { try { f(); } catch { /* ignore */ } } } };
     }
-    return { createMarinara, dispose() { try { off?.(); } catch { /* ignore */ } if (win.fetch === baseFetch && hostFetch) win.fetch = hostFetch; } };
+    return { createMarinara, request, dispose() { try { off?.(); } catch { /* ignore */ } if (win.fetch === baseFetch && hostFetch) win.fetch = hostFetch; } };
 }

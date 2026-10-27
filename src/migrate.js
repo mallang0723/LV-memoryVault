@@ -1,6 +1,8 @@
 // 0.4.x (data.json {version:1,revision,items,candidates,undo}) -> original memoryCabinetV1. Pure functions, no host access.
-// Mapping rules (spike): promises -> promise, everything else -> anchor (category by layer). Anything the 0.4 scope model marks as
-// not-publicly-known and that has no explicit knownBy list is kept but NOT injected (promise status 'hold' / anchor active:false).
+// Imported: ONLY the layers that map cleanly - promises -> promise, anchors -> anchor. elements/scenes/flows/wiki stay in the backup file only.
+// Anything the 0.4 scope model marks as not-publicly-known and that has no explicit knownBy list is kept but NOT injected
+// (promise status 'hold' / anchor active:false), so an import can never make a secret visible.
+export const IMPORT_LAYERS = ['promises', 'anchors'];
 const CATEGORY = { anchors: 'setting', elements: 'setting', scenes: 'event', flows: 'state', wiki: 'setting' };
 const LAYER_TAG = { anchors: '', elements: '[요소] ', scenes: '[장면] ', flows: '[흐름] ', wiki: '[위키] ' };
 const firstLine = (t, n = 60) => { const s = String(t).trim().split(/\n/)[0]; return s.length > n ? s.slice(0, n - 1) + '…' : s; };
@@ -17,12 +19,14 @@ export function mapItem(x, now) {
 }
 
 export function mapOldToOriginal(old, { chatId, now = new Date().toISOString() }) {
-    const items = (old?.items || []).map(x => mapItem(x, now));
+    const all = old?.items || [];
+    const items = all.filter(x => IMPORT_LAYERS.includes(x.layer)).map(x => mapItem(x, now));
+    const skippedByLayer = {}; for (const x of all) if (!IMPORT_LAYERS.includes(x.layer)) skippedByLayer[x.layer || '?'] = (skippedByLayer[x.layer || '?'] || 0) + 1;
     const held = items.filter(i => (i.type === 'promise' ? i.status === 'hold' : !i.active && !i.archived)).length;
     return {
         data: { version: 1, ownerChatId: chatId, enabled: true, items },
-        report: { items: items.length, held, candidatesDropped: (old?.candidates || []).length, undoDropped: (old?.undo || []).length,
-            lostFields: ['revision', 'undo', 'candidates (re-run analysis)', 'evidence.index/fingerprint', 'audience', 'condition', 'importedScope', 'branchHold', 'review', 'resumeRequired', 'layer (elements/scenes/flows/wiki become anchors with a title tag)'] },
+        report: { items: items.length, held, skippedByLayer, candidatesDropped: (old?.candidates || []).length, undoDropped: (old?.undo || []).length,
+            lostFields: ['revision', 'undo', 'candidates (re-run analysis)', 'evidence.index/fingerprint', 'audience', 'condition', 'importedScope', 'branchHold', 'review', 'resumeRequired', 'elements/scenes/flows/wiki items (backup only)'] },
     };
 }
 

@@ -1,10 +1,15 @@
 import { installShim } from './shim.js';
+import { installConfirmGuard } from './confirm-guard.js';
+import { createPanel } from './panel.js';
 import { runOriginal, ORIGINAL_CSS } from './original.generated.js';
 
 export function setup(ctx, { win = globalThis.window, doc = globalThis.document } = {}) {
+    // Lumiverse's active chat. getActiveChat is sync and present in current hosts; older ones fall back to the runtime state.
     const activeId = () => { try { const c = ctx.getActiveChat?.(); if (c && typeof c.chatId === 'string') return c.chatId; } catch { /* older host */ } try { return ctx.state?.get?.('chat.active')?.chatId || ''; } catch { return ''; } };
     const syncKey = () => { try { const id = activeId(); if (id) win.localStorage.setItem('marinara-active-chat-id', id); } catch { /* optional */ } };   // the original's "chat on screen"
     const shim = installShim(ctx, { win, activeChatId: activeId });
+    const panel = createPanel(ctx, shim, { win, doc });
+    const guard = installConfirmGuard(win, doc, { notify: (m, d) => panel.toast(m, d) });
     const style = doc.createElement('style');
     style.textContent = ORIGINAL_CSS;
     (doc.head || doc.documentElement).append(style);
@@ -23,5 +28,6 @@ export function setup(ctx, { win = globalThis.window, doc = globalThis.document 
     const offs = [];
     for (const ev of ['CHAT_SWITCHED', 'CHAT_CHANGED']) { try { const o = ctx.events?.on?.(ev, () => { timer = setTimeout(onSwitch, 0); }); if (typeof o === 'function') offs.push(o); } catch { /* optional */ } }
     try { const o = ctx.state?.subscribe?.('chat.active', () => { timer = setTimeout(onSwitch, 0); }); if (typeof o === 'function') offs.push(o); } catch { /* optional */ }
-    return () => { alive = false; clearTimeout(timer); offs.forEach(o => { try { o(); } catch { /* ignore */ } }); run?.runCleanups(); shim.dispose(); style.remove(); };
+    void panel.promptIfMigrationPending();   // after an upgrade from 0.4.x: offer backup + import once per page load
+    return () => { alive = false; clearTimeout(timer); offs.forEach(o => { try { o(); } catch { /* ignore */ } }); run?.runCleanups(); guard.dispose(); panel.dispose(); shim.dispose(); style.remove(); };
 }

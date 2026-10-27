@@ -20,7 +20,8 @@ test('mapping rules', () => {
     assert.equal(by('a').type, 'promise'); assert.equal(by('a').status, 'active'); assert.deepEqual(by('a').sourceIds, ['m1']);
     assert.deepEqual(by('b').knownBy, ['char1']); assert.equal(by('b').active, true);          // restricted kept restricted
     assert.equal(by('c').active, false);                                                        // unknown scope: kept, not injected
-    assert.match(by('d').title, /^\[장면\]/); assert.equal(by('e').status, 'done');
+    assert.equal(by('d'), undefined, 'scenes are not cleanly mappable: they stay in the backup only'); assert.equal(by('e').status, 'done');
+    assert.equal(data.items.length, 4); assert.deepEqual(report.skippedByLayer, { scenes: 1 });
     assert.equal(report.candidatesDropped, 1); assert.equal(report.undoDropped, 1);
 });
 
@@ -50,9 +51,13 @@ test('the pinned original loads the migrated memoryCabinetV1 and lists the items
     const { start } = await import('../src/backend.js?m' + Math.random()); const { setup } = await import('../src/frontend.js?m' + Math.random());
     const stopB = start(host.api, { afterMs: 0 });
     // run the one-time import through the real route
-    const reply = await new Promise(res => { const orig = host.api.sendToFrontend; host.ctx.onBackendMessage(m => m.requestId === 'r1' && res(m)); host.handlers.frontend({ requestId: 'r1', type: 'api', method: 'POST', path: '_migrate/apply' }, 'user1'); });
-    assert.ok(reply.ok, JSON.stringify(reply)); assert.equal(reply.data.chat1.items, 5);
-    assert.equal(host.chat.metadata.memoryCabinetV1.items.length, 5);
+    const rpc = (id, method, path, body) => new Promise(res => { const off = host.ctx.onBackendMessage(m => { if (m.requestId === id) { off(); res(m); } }); host.handlers.frontend({ requestId: id, type: 'api', method, path, body }, 'user1'); });
+    assert.equal((await rpc('r0', 'POST', '_migrate/apply', { confirmBackup: true })).ok, false, 'no import before a backup was downloaded');
+    assert.equal((await rpc('r00', 'GET', '_migrate/backup')).data.chats.chat1.data.items.length, 5);
+    assert.equal((await rpc('r01', 'POST', '_migrate/apply', {})).ok, false, 'no import without the explicit "I saved it" confirmation');
+    const reply = await rpc('r1', 'POST', '_migrate/apply', { confirmBackup: true });
+    assert.ok(reply.ok, JSON.stringify(reply)); assert.equal(reply.data.chat1.items, 4);
+    assert.equal(host.chat.metadata.memoryCabinetV1.items.length, 4);
     const stopF = setup(host.ctx, { win: window, doc: document });
     try {
         await sleep(1500);
@@ -60,6 +65,6 @@ test('the pinned original loads the migrated memoryCabinetV1 and lists the items
         await sleep(2500);
         const text = document.getElementById('mmc-root-v1').textContent;
         assert.match(text, /한강에서 만나기로 약속했다/, 'migrated promise is rendered by the original UI');
-        assert.equal(host.chat.metadata.memoryCabinetV1.items.length, 5, 'opening the vault did not wipe or duplicate migrated data');
+        assert.equal(host.chat.metadata.memoryCabinetV1.items.length, 4, 'opening the vault did not wipe or duplicate migrated data');
     } finally { stopF(); stopB(); }
 });

@@ -14,12 +14,10 @@ function response(status, data) {
 }
 function installShim(ctx, { win = globalThis.window, activeChatId = () => "", timeoutMs = 60000, slowMs = 330000 } = {}) {
   const pending = new Map;
+  let onTrigger = null;
   const off = ctx.onBackendMessage((msg) => {
     if (msg?.event === "mv-trigger") {
-      try {
-        if (typeof msg.chatId === "string")
-          win.fetch(`/api/chats/${encodeURIComponent(msg.chatId)}`).catch(() => {});
-      } catch {}
+      onTrigger?.(msg);
       return;
     }
     const p = msg && pending.get(msg.requestId);
@@ -50,6 +48,14 @@ function installShim(ctx, { win = globalThis.window, activeChatId = () => "", ti
       reject(e);
     }
   });
+  onTrigger = (msg) => {
+    if (typeof msg.chatId !== "string" || activeChatId() && activeChatId() !== msg.chatId)
+      return;
+    request("POST", "_trigger/claim", { id: msg.id || `${msg.chatId}:${Date.now()}` }).then((r) => {
+      if (r?.ok && r.data?.ok)
+        return win.fetch(`/api/chats/${encodeURIComponent(msg.chatId)}`);
+    }).catch(() => {});
+  };
   const shimFetch = async (input, init = {}) => {
     const url = typeof input === "string" ? input : String(input?.url || input);
     const method = String(init?.method || "GET").toUpperCase();
@@ -93,13 +99,401 @@ function installShim(ctx, { win = globalThis.window, activeChatId = () => "", ti
       }
     } };
   }
-  return { createMarinara, dispose() {
+  return { createMarinara, request, dispose() {
     try {
       off?.();
     } catch {}
     if (win.fetch === baseFetch && hostFetch)
       win.fetch = hostFetch;
   } };
+}
+
+// src/confirm-guard.js
+var BLOCK_MS = 25;
+var WINDOW_MS = 6000;
+function installConfirmGuard(win, doc, { rootId = "mmc-root-v1", launcherId = "mmc-launcher-v1", notify = () => {}, now = () => win.performance?.now?.() ?? Date.now() } = {}) {
+  const native = win.confirm;
+  if (typeof native !== "function")
+    return { dispose() {}, stats: { blocked: 0 } };
+  let inOriginal = false, pending = null;
+  const stats = { blocked: 0, accepted: 0 };
+  const mark = (e) => {
+    const t = e.target, within = (n) => {
+      for (;n; n = n.parentNode || n.host)
+        if (n.id === rootId || n.id === launcherId)
+          return true;
+      return false;
+    };
+    if (!within(t))
+      return;
+    inOriginal = true;
+    win.setTimeout(() => {
+      inOriginal = false;
+    }, 0);
+  };
+  const EVENTS = ["click", "change", "keydown", "pointerdown", "submit"];
+  for (const ev of EVENTS)
+    doc.addEventListener(ev, mark, true);
+  const wrapped = function confirm2(message) {
+    if (!inOriginal)
+      return native.call(win, message);
+    const t0 = now();
+    let answer, threw = false;
+    try {
+      answer = native.call(win, message);
+    } catch {
+      threw = true;
+    }
+    if (!threw && (answer === true || now() - t0 >= BLOCK_MS))
+      return !!answer;
+    const key = String(message ?? "");
+    const t = now();
+    if (pending && pending.key === key && t - pending.at < WINDOW_MS) {
+      pending = null;
+      stats.accepted++;
+      return true;
+    }
+    pending = { key, at: t };
+    stats.blocked++;
+    try {
+      notify("이 브라우저가 확인 창을 막았어요. 같은 버튼을 한 번 더 누르면 실행돼요.", key.slice(0, 120));
+    } catch {}
+    return false;
+  };
+  win.confirm = wrapped;
+  return {
+    stats,
+    dispose() {
+      for (const ev of EVENTS)
+        doc.removeEventListener(ev, mark, true);
+      if (win.confirm === wrapped)
+        win.confirm = native;
+    }
+  };
+}
+
+// src/download.js
+function downloadJson(doc, name, { document: d = globalThis.document, URL: U = globalThis.URL, Blob: B = globalThis.Blob, container = null } = {}) {
+  const text = JSON.stringify(doc, null, 1);
+  try {
+    const url = U.createObjectURL(new B([text], { type: "application/json" }));
+    const a = d.createElement("a");
+    a.href = url;
+    a.download = name;
+    a.style.display = "none";
+    d.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => {
+      try {
+        U.revokeObjectURL(url);
+      } catch {}
+    }, 30000);
+    return { method: "blob", bytes: text.length, text };
+  } catch {}
+  return { ...showText(text, { document: d, container }), method: "textarea" };
+}
+function showText(text, { document: d = globalThis.document, container = null } = {}) {
+  const t = d.createElement("textarea");
+  t.value = text;
+  t.readOnly = true;
+  t.setAttribute("aria-label", "백업 JSON — 전체 선택해 복사하세요");
+  if (container) {
+    t.className = "mvx-text";
+    container.append(t);
+  } else {
+    t.style.cssText = "position:fixed;inset:10% 5%;width:90%;height:70%;z-index:2147483647";
+    d.body.append(t);
+  }
+  try {
+    t.focus?.();
+    t.select?.();
+  } catch {}
+  let copied = false;
+  try {
+    copied = !!d.execCommand?.("copy");
+  } catch {}
+  return { copied, bytes: text.length, text, remove: () => t.remove() };
+}
+
+// src/panel.js
+var ID = "mvx-overlay";
+var TOAST = "mvx-toast";
+var PANEL_CSS = `
+#${ID},#${TOAST}{--bg:#fff;--fg:#1c1b22;--mute:#555463;--line:#c7c6d2;--acc:#4338ca;--accfg:#fff;--soft:#f1f0f8;--warn:#8a4b00;--warnbg:#fff4e0;--ok:#146c2e;font:16px/1.5 system-ui,-apple-system,"Noto Sans KR",sans-serif;color:var(--fg);box-sizing:border-box}
+#${ID}[data-theme=dark],#${TOAST}[data-theme=dark]{--bg:#1f1d2b;--fg:#ececf5;--mute:#b9b8c8;--line:#4a485e;--acc:#b4a9ff;--accfg:#16142a;--soft:#2a2840;--warn:#ffcf8a;--warnbg:#3a2c12;--ok:#7ee0a0}
+#${ID} *,#${TOAST} *{box-sizing:border-box}
+#${ID}{position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55);padding:12px}
+#${ID}[hidden]{display:none}
+#${ID} .mvx-card{background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:14px;width:100%;max-width:560px;max-height:100%;display:flex;flex-direction:column;min-height:0}
+#${ID} .mvx-head{display:flex;align-items:center;gap:8px;padding:12px 12px 8px 16px;border-bottom:1px solid var(--line)}
+#${ID} .mvx-head h2{margin:0;font-size:18px;line-height:1.3;flex:1}
+#${ID} .mvx-body{padding:12px 16px 16px;overflow-y:auto;overscroll-behavior:contain;min-height:0}
+#${ID} section{margin:0 0 18px}
+#${ID} h3{margin:0 0 6px;font-size:16px}
+#${ID} p{margin:0 0 8px}
+#${ID} .mvx-hint{font-size:14px;color:var(--mute)}
+#${ID} button,#${ID} input[type=number]{font:inherit;min-height:44px;border-radius:10px;border:1px solid var(--line);background:var(--soft);color:var(--fg);padding:0 14px}
+#${ID} button.mvx-primary{background:var(--acc);color:var(--accfg);border-color:var(--acc);font-weight:600}
+#${ID} button:disabled{opacity:.6}
+#${ID} .mvx-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+#${ID} input[type=number]{width:96px}
+#${ID} label.mvx-check{display:flex;gap:10px;align-items:center;min-height:44px}
+#${ID} label.mvx-check input{width:24px;height:24px;flex:none}
+#${ID} .mvx-note{background:var(--warnbg);color:var(--warn);border-radius:10px;padding:10px 12px;font-size:15px}
+#${ID} .mvx-ok{color:var(--ok);font-weight:600}
+#${ID} textarea.mvx-text{width:100%;height:160px;font:13px/1.4 ui-monospace,monospace;background:var(--soft);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:8px}
+#${TOAST}{position:fixed;left:12px;right:12px;bottom:76px;z-index:2147483001;display:flex;justify-content:center;pointer-events:none}
+#${TOAST} div{background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:12px;padding:10px 14px;max-width:520px;box-shadow:0 6px 24px rgba(0,0,0,.35);pointer-events:auto}
+#${TOAST} small{display:block;font-size:14px;color:var(--mute)}
+`;
+var lum = (css) => {
+  const m = String(css || "").match(/[\d.]+/g);
+  if (!m || m.length < 3 || m[3] !== undefined && +m[3] === 0)
+    return null;
+  const f = (v) => {
+    v /= 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * f(+m[0]) + 0.7152 * f(+m[1]) + 0.0722 * f(+m[2]);
+};
+function detectTheme(win, doc) {
+  for (const el of [doc.body, doc.documentElement]) {
+    try {
+      const l = lum(win.getComputedStyle(el).backgroundColor);
+      if (l !== null)
+        return l < 0.4 ? "dark" : "light";
+    } catch {}
+  }
+  try {
+    return win.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  } catch {
+    return "light";
+  }
+}
+function createPanel(ctx, { request, activeChatId = () => "" }, { win = globalThis.window, doc = globalThis.document } = {}) {
+  const el = (tag, props = {}, ...kids) => {
+    const n = doc.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (k === "class")
+        n.className = v;
+      else if (k.startsWith("on"))
+        n.addEventListener(k.slice(2), v);
+      else if (v !== false && v != null)
+        n.setAttribute(k, v === true ? "" : v);
+    }
+    n.append(...kids.flat().filter((x) => x != null && x !== false));
+    return n;
+  };
+  const style = el("style");
+  style.textContent = PANEL_CSS;
+  (doc.head || doc.documentElement).append(style);
+  const call = async (method, path, body) => {
+    const r = await request(method, path, body);
+    if (!r.ok)
+      throw new Error(r.error || "요청 실패");
+    return r.data;
+  };
+  let overlay = null, toastTimer = null, status = null, backedUp = false, lastBackup = null, importResult = null, backupText = "", busy = false, action = null, fab = null;
+  function toast(message, detail = "") {
+    let t = doc.getElementById(TOAST);
+    if (!t) {
+      t = el("div", { id: TOAST, role: "status", "aria-live": "polite" });
+      doc.body.append(t);
+    }
+    t.dataset.theme = detectTheme(win, doc);
+    t.replaceChildren(el("div", {}, message, detail ? el("small", {}, detail) : null));
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.replaceChildren(), 7000);
+  }
+  async function refresh() {
+    try {
+      status = await call("GET", "_adapter/status");
+    } catch (e) {
+      status = { error: String(e?.message || e) };
+    }
+  }
+  const mig = () => status?.migrate;
+  const migrationPending = () => {
+    const m = mig();
+    return !!m && !m.error && m.oldChats > 0 && !m.dismissed && !m.importedAt;
+  };
+  function render() {
+    if (!overlay)
+      return;
+    overlay.dataset.theme = detectTheme(win, doc);
+    const body = overlay.querySelector(".mvx-body");
+    const s = status || {};
+    const parts = [];
+    if (s.error)
+      parts.push(el("p", { class: "mvx-note" }, `상태를 읽지 못했어요: ${s.error}`));
+    if (s.permissions && !s.permissions.generation)
+      parts.push(el("p", { class: "mvx-note" }, "이 확장에 generation 권한이 없어요. 자동 분석과 모델 분석이 동작하지 않습니다. 확장 관리에서 권한을 승인해 주세요."));
+    if (s.permissions && !s.permissions.world_books)
+      parts.push(el("p", { class: "mvx-note" }, "world_books 권한이 없어 승인한 기억을 로어북에 쓸 수 없어요."));
+    const input = el("input", { type: "number", id: "mvx-every", min: s.everyMin ?? 3, max: s.everyMax ?? 100, value: s.every ?? 10, inputmode: "numeric", "aria-label": "자동 분석 간격(사용자 턴)" });
+    const save = el("button", { type: "button", class: "mvx-primary", id: "mvx-save", onclick: async () => {
+      try {
+        const r = await call("POST", "_adapter/settings", { every: Number(input.value) });
+        s.every = r.every;
+        input.value = r.every;
+        toast(`${r.every}턴마다 분석 대상을 쌓습니다.`);
+      } catch (e) {
+        toast(`저장하지 못했어요: ${e.message}`);
+      }
+    } }, "저장");
+    parts.push(el("section", {}, el("h3", {}, "자동 분석 간격"), el("p", { class: "mvx-hint" }, `사용자 메시지가 이 횟수만큼 쌓일 때마다 그 구간의 대화 원문을 하나의 요약으로 만들어 기억 보관함의 분석에 넘깁니다(별도 요약 모델 호출 없음). ${s.everyMin ?? 3}~${s.everyMax ?? 100}, 기본 ${s.everyDefault ?? 10}.`), el("div", { class: "mvx-row" }, el("label", { for: "mvx-every" }, "사용자 턴"), input, save), el("p", { class: "mvx-hint" }, "실제로 분석이 돌려면 기억 보관함 설정의 「새 요약 갱신 방식」을 「자동 분석 후 승인 대기」(또는 완전 자동 적용)로 바꾸고 모델 연결을 골라야 해요. 기본값(알림 + 모델 정리 버튼)에서는 자동으로 모델을 부르지 않습니다.")));
+    const m = mig();
+    if (m && m.oldChats > 0 && !m.error)
+      parts.push(migrationSection(m));
+    else if (m?.error && m.error !== "unsupported")
+      parts.push(el("p", { class: "mvx-hint" }, `옛 데이터 확인 실패: ${m.error}`));
+    parts.push(el("section", {}, el("h3", {}, "알아 둘 점"), el("p", { class: "mvx-hint" }, "인물별 비밀(아는 사람 제한)은 이름이 맞을 때만 보이는 조건문으로 로어북에 저장돼요. 이름을 바꾸면 깨지고, 그룹 채팅의 합치기(merge) 모드에서는 새거나 빠질 수 있어요. 자세한 내용은 README의 「한계」를 보세요.")));
+    body.replaceChildren(...parts);
+  }
+  function migrationSection(m) {
+    const sec = el("section", { id: "mvx-migrate" }, el("h3", {}, "0.4.x 데이터 옮기기"));
+    if (m.importedAt) {
+      sec.append(el("p", { class: "mvx-ok" }, `가져왔어요: 채팅 ${m.result?.chats ?? "?"}개, 항목 ${m.result?.imported ?? "?"}개.`));
+      if (importResult)
+        sec.append(el("p", { class: "mvx-hint" }, `보류로 들어온 항목(주입 안 함) ${Object.values(importResult).reduce((n, r) => n + (r.held || 0), 0)}개. 원본 화면에서 확인하세요.`));
+      return sec;
+    }
+    sec.append(el("p", {}, `옛 버전(0.4.x)이 남긴 기억이 채팅 ${m.oldChats}개, 항목 ${m.oldItems}개 있어요. 새 버전은 저장 형식이 달라 자동으로는 이어지지 않아요.`), el("p", { class: "mvx-hint" }, `① 백업을 먼저 받으세요(전부 들어 있어요). ② 약속·앵커 ${m.importable}개만 새 형식으로 가져올 수 있어요. 장면록·요소·흐름·위키·후보·되돌리기는 백업 파일에만 남습니다.`));
+    const dl = el("button", { type: "button", id: "mvx-backup", class: backedUp ? "" : "mvx-primary", disabled: busy, onclick: doBackup }, backedUp ? "백업 다시 받기" : "① 백업 받기");
+    sec.append(el("div", { class: "mvx-row" }, dl, el("button", { type: "button", id: "mvx-showtext", disabled: busy, onclick: () => doBackup(null, true) }, "텍스트로 보기")));
+    if (backupText) {
+      sec.append(el("p", { class: "mvx-hint" }, "아래 글을 전부 복사해 메모 앱·파일에 붙여 두세요."));
+      const t = el("textarea", { class: "mvx-text", readonly: true, "aria-label": "백업 JSON — 전체 선택해 복사하세요" });
+      t.value = backupText;
+      sec.append(t);
+    } else
+      sec.append(el("p", { class: "mvx-hint" }, "받아도 파일이 안 보이면(일부 앱 내 브라우저) 「텍스트로 보기」로 글을 복사해 두세요."));
+    const chk = el("input", { type: "checkbox", id: "mvx-saved", disabled: !backedUp });
+    chk.checked = !!overlay.dataset.saved;
+    chk.addEventListener("change", () => {
+      overlay.dataset.saved = chk.checked ? "1" : "";
+      render();
+    });
+    sec.append(el("label", { class: "mvx-check" }, chk, "백업을 저장했어요"));
+    sec.append(el("div", { class: "mvx-row" }, el("button", { type: "button", id: "mvx-import", class: "mvx-primary", disabled: busy || !backedUp || !chk.checked, onclick: doImport }, `② 약속·앵커 ${m.importable}개 가져오기`), el("button", { type: "button", id: "mvx-dismiss", disabled: busy, onclick: doDismiss }, "다시 묻지 않기")));
+    return sec;
+  }
+  async function doBackup(_e, asText = false) {
+    busy = true;
+    render();
+    try {
+      const doc0 = await call("GET", "_migrate/backup");
+      const name = `memory-cabinet-0.4-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      backedUp = true;
+      if (asText) {
+        backupText = JSON.stringify(doc0, null, 1);
+        lastBackup = { method: "text" };
+      } else {
+        const sink = doc.createElement("div");
+        const r = downloadJson(doc0, name, { document: doc, container: sink });
+        lastBackup = { method: r.method, bytes: r.bytes };
+        backupText = r.method === "textarea" ? r.text : "";
+        toast(r.method === "blob" ? `백업 파일을 만들었어요(${Math.ceil(r.bytes / 1024)}KB). 받은 파일을 확인해 주세요.` : "파일을 만들 수 없어 글로 보여 드려요. 전부 복사해 두세요.");
+      }
+      await refresh();
+    } catch (e) {
+      toast(`백업하지 못했어요: ${e.message}`);
+    }
+    busy = false;
+    render();
+    if (backupText) {
+      const t = overlay.querySelector("textarea.mvx-text");
+      try {
+        t?.focus();
+        t?.select();
+        doc.execCommand?.("copy");
+      } catch {}
+    }
+  }
+  async function doImport() {
+    busy = true;
+    render();
+    try {
+      importResult = await call("POST", "_migrate/apply", { confirmBackup: true });
+      await refresh();
+      toast("가져왔어요. 각 채팅에서 기억 보관함을 열어 확인하세요.");
+    } catch (e) {
+      toast(`가져오지 못했어요: ${e.message}`);
+    }
+    busy = false;
+    render();
+  }
+  async function doDismiss() {
+    try {
+      await call("POST", "_migrate/dismiss");
+      await refresh();
+    } catch {}
+    render();
+  }
+  async function open() {
+    if (!overlay) {
+      const card = el("div", { class: "mvx-card", role: "dialog", "aria-modal": "true", "aria-labelledby": "mvx-title" }, el("div", { class: "mvx-head" }, el("h2", { id: "mvx-title" }, "기억 보관함 설정"), el("button", { type: "button", id: "mvx-close", "aria-label": "닫기", onclick: close }, "닫기")), el("div", { class: "mvx-body" }));
+      overlay = el("div", { id: ID }, card);
+      overlay.addEventListener("click", (e) => {
+        if (e.target === overlay)
+          close();
+      });
+      overlay.addEventListener("keydown", (e) => {
+        if (e.key === "Escape")
+          close();
+      });
+      doc.body.append(overlay);
+    }
+    overlay.hidden = false;
+    render();
+    await refresh();
+    render();
+    try {
+      overlay.querySelector("#mvx-close")?.focus();
+    } catch {}
+  }
+  function close() {
+    if (overlay)
+      overlay.hidden = true;
+  }
+  try {
+    const a = ctx.ui?.registerInputBarAction?.({ id: "memory-cabinet-settings", label: "기억 보관함 설정", subtitle: "자동 분석 간격 · 옛 데이터 옮기기" });
+    if (a) {
+      action = a;
+      a.onClick(() => {
+        open();
+      });
+    }
+  } catch {}
+  if (!action) {
+    fab = el("button", { type: "button", id: "mvx-fab", "aria-label": "기억 보관함 설정", onclick: () => {
+      open();
+    } }, "기억 설정");
+    fab.style.cssText = "position:fixed;left:12px;bottom:12px;z-index:2147482000;min-height:44px;min-width:44px;padding:0 12px;font:15px system-ui;border-radius:12px;border:1px solid #888;background:#fff;color:#111;opacity:.9";
+    doc.body.append(fab);
+  }
+  return {
+    open,
+    close,
+    toast,
+    refresh,
+    async promptIfMigrationPending() {
+      await refresh();
+      if (migrationPending())
+        await open();
+    },
+    dispose() {
+      try {
+        action?.destroy?.();
+      } catch {}
+      overlay?.remove();
+      fab?.remove();
+      doc.getElementById(TOAST)?.remove();
+      style.remove();
+      clearTimeout(toastTimer);
+    }
+  };
 }
 
 // src/original.generated.js
@@ -937,6 +1331,8 @@ var ORIGINAL_CSS = `/* 기억 보관함 v2.0.0 · 전역 테마 하나(리본 �
 #mmc-root-v1 .mmc-bulk-count{flex:0 0 auto}
 #mmc-root-v1 .mmc-bulk-actions{width:100%}
 #mmc-root-v1 .mmc-bulk-actions .mmc-btn{flex:1 1 0;min-height:36px}}
+
+/* adapter overrides */
 `;
 function runOriginal(marinara) {
   (() => {
@@ -5734,7 +6130,7 @@ ${sourceBlock}
     function wikiImageEditorMarkup(image, index) {
       return `<section class="mmc-wiki-edit-section">
       <div class="mmc-wiki-edit-image-head"><b>${index === 0 ? "대표 이미지" : `이미지 ${index + 1}`}</b><button class="mmc-btn mmc-danger" data-action="wiki-remove-image" data-index="${index}">삭제</button></div>
-      <input id="mmc-wiki-img-url-${index}" value="${esc(image.url)}" maxlength="1000" placeholder="https://… 또는 /로 시작하는 Marinara 경로">
+      <input id="mmc-wiki-img-url-${index}" value="${esc(image.url)}" maxlength="1000" placeholder="https://… 또는 /로 시작하는 루미버스 경로">
       <input id="mmc-wiki-img-alt-${index}" value="${esc(image.alt)}" maxlength="200" placeholder="alt · 화면 낭독기와 이미지 로드 실패 시 표시">
       <input id="mmc-wiki-img-cap-${index}" value="${esc(image.caption)}" maxlength="300" placeholder="캡션 · 이미지 아래 설명">
     </section>`;
@@ -8325,7 +8721,7 @@ ${JSON.stringify(rows, null, 2)}
     function sourceLayer() {
       const isReview = state.sourceTarget === "review";
       const title = isReview ? "새 요약 검토" : state.sourceMode === "summaries" ? "순정 요약에서 가져오기" : "최근 대화에서 가져오기";
-      const empty = state.sourceMode === "summaries" ? "이 방에 사용할 수 있는 summaryEntries가 없습니다." : "불러올 최근 메시지가 없습니다.";
+      const empty = state.sourceMode === "summaries" ? "이 방에는 아직 분석할 요약이 없습니다. 사용자 메시지가 설정한 횟수만큼 쌓이면 자동으로 만들어집니다." : "불러올 최근 메시지가 없습니다.";
       const modelTitle = isReview ? "약속 + 앵커 통합 정리" : "약속 + 앵커 한 번에 분류";
       const modelHelp = isReview ? "선택한 새 요약과 현재 활성 기록을 함께 비교합니다. 모델은 제안만 하고 자동 적용하지 않습니다." : "선택한 원문은 모델에 한 번만 보내며, 같은 응답에서 약속과 앵커를 함께 분류합니다. DeepSeek 연결이 있으면 처음 기본값으로 우선합니다.";
       const footer = isReview ? `<button class="mmc-btn" data-action="source-mark-reviewed" ${state.sourceSelected.size ? "" : "disabled"}>검토 완료로 표시</button><div><button class="mmc-btn" data-action="source-local-promise" ${state.sourceSelected.size ? "" : "disabled"}>약속으로 수동 정리</button><button class="mmc-btn" data-action="source-local-anchor" ${state.sourceSelected.size ? "" : "disabled"}>앵커로 수동 정리</button><button class="mmc-btn mmc-model-btn" data-action="source-model-review" ${state.sourceSelected.size && state.modelConnectionId ? "" : "disabled"}>${SVG.spark}<span>모델로 통합 정리</span></button></div>` : `<span></span><div><button class="mmc-btn" data-action="source-local" ${state.sourceSelected.size ? "" : "disabled"}>로컬로 가져오기</button><button class="mmc-btn mmc-model-btn" data-action="source-model" ${state.sourceSelected.size && state.modelConnectionId ? "" : "disabled"}>${SVG.spark}<span>모델로 한 번에 정리</span></button></div>`;
@@ -10892,6 +11288,8 @@ function setup(ctx, { win = globalThis.window, doc = globalThis.document } = {})
     } catch {}
   };
   const shim = installShim(ctx, { win, activeChatId: activeId });
+  const panel = createPanel(ctx, shim, { win, doc });
+  const guard = installConfirmGuard(win, doc, { notify: (m, d) => panel.toast(m, d) });
   const style = doc.createElement("style");
   style.textContent = ORIGINAL_CSS;
   (doc.head || doc.documentElement).append(style);
@@ -10935,6 +11333,7 @@ function setup(ctx, { win = globalThis.window, doc = globalThis.document } = {})
     if (typeof o === "function")
       offs.push(o);
   } catch {}
+  panel.promptIfMigrationPending();
   return () => {
     alive = false;
     clearTimeout(timer);
@@ -10944,6 +11343,8 @@ function setup(ctx, { win = globalThis.window, doc = globalThis.document } = {})
       } catch {}
     });
     run?.runCleanups();
+    guard.dispose();
+    panel.dispose();
     shim.dispose();
     style.remove();
   };

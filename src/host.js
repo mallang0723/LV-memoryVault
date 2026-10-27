@@ -19,29 +19,49 @@ export function createHost(api, { summaries } = {}) {
     }
 
     // ---- chats: Lumiverse chat -> Marinara chat (metadata.activeLorebookIds <-> chat_world_book_ids, branch keys, summaryEntries) ----
-    const shapeChat = c => {
+    const shapeChat = (c, extra = null) => {
         const m = c.metadata && typeof c.metadata === 'object' ? c.metadata : {};
         const metadata = { ...m, activeLorebookIds: Array.isArray(m.chat_world_book_ids) ? m.chat_world_book_ids : [] };
         if (typeof m.branched_from === 'string') metadata.branchParentChatId = m.branched_from;
-        const entries = summaries?.entries(c.id) || [];
+        const entries = extra || summaries?.cached(c.id) || [];
         if (entries.length) metadata.summaryEntries = entries;
         const ids = Array.isArray(m.character_ids) && m.character_ids.length ? m.character_ids : c.character_id ? [c.character_id] : [];
         return { id: c.id, name: c.name || '', mode: 'roleplay', characterIds: ids, metadata, createdAt: iso(c.created_at), updatedAt: iso(c.updated_at), lastMessageAt: iso(c.updated_at) };
     };
     const chatsList = async u => (await pages(need(u), o => api.chats.list(o))).map(shapeChat);
-    async function chat(u, id) { const c = await api.chats.get(id, need(u)); if (!c) throw err('채팅을 찾지 못했습니다.', 404); return shapeChat(c); }
-    /** PATCH chats/:id/metadata. Spindle metadata writes are full replaces: read, merge, write. */
-    async function patchMetadata(u, id, patch) {
-        const c = await api.chats.get(id, need(u));
-        if (!c) throw err('채팅을 찾지 못했습니다.', 404);
-        const next = { ...(c.metadata || {}) };
+    async function chat(u, id) { const c = await api.chats.get(id, need(u)); if (!c) throw err('채팅을 찾지 못했습니다.', 404); return shapeChat(c, summaries ? await summaries.entries(id) : null); }
+    // Spindle has no atomic metadata merge: chats.update REPLACES metadata. So (1) our own writes to one chat are queued, (2) the chat is
+    // re-read right before each write (no work between read and write), (3) the write is verified and redone if the host clobbered it.
+    // What stays open: a host background write landing between our read and our write can still be lost (milliseconds wide).
+    const queues = new Map();
+    const queued = (id, fn) => { const run = (queues.get(id) || Promise.resolve()).catch(() => {}).then(fn); queues.set(id, run); run.catch(() => {}).finally(() => { if (queues.get(id) === run) queues.delete(id); }); return run; };
+    const stable = v => (Array.isArray(v) ? v.map(stable) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, stable(v[k])])) : v);
+    const same = (a, b) => JSON.stringify(stable(a ?? null)) === JSON.stringify(stable(b ?? null));
+    function applyPatch(base, patch) {
+        const next = { ...(base || {}) }, touched = {};
         for (const [k, v] of Object.entries(patch || {})) {
-            if (k === 'activeLorebookIds') next.chat_world_book_ids = Array.isArray(v) ? v.map(String) : [];
-            else if (k === 'summaryEntries' || k === 'branchParentChatId') continue; // derived, never persisted
-            else next[k] = v;
+            if (k === 'summaryEntries' || k === 'branchParentChatId') continue;   // derived, never persisted
+            const key = k === 'activeLorebookIds' ? 'chat_world_book_ids' : k;
+            next[key] = k === 'activeLorebookIds' ? (Array.isArray(v) ? v.map(String) : []) : v;
+            touched[key] = next[key];
         }
-        const c2 = await api.chats.update(id, { metadata: next }, u);
-        return shapeChat(c2);
+        return { next, touched };
+    }
+    /** PATCH chats/:id/metadata. */
+    function patchMetadata(u, id, patch, { attempts = 3 } = {}) {
+        need(u);
+        return queued(id, async () => {
+            for (let i = 0; i < attempts; i++) {
+                const c = await api.chats.get(id, u);   // read immediately before the write
+                if (!c) throw err('채팅을 찾지 못했습니다.', 404);
+                const { next, touched } = applyPatch(c.metadata, patch);
+                const c2 = await api.chats.update(id, { metadata: next }, u);
+                void c2;
+                const back = await api.chats.get(id, u);   // what is stored now, not what update() echoed
+                if (back && Object.keys(touched).every(k => same(back.metadata?.[k], touched[k]))) return shapeChat(back);
+            }
+            throw err('채팅 메타데이터를 저장하지 못했습니다(호스트가 같은 시각에 덮어썼습니다). 다시 시도해 주세요.', 409);
+        });
     }
     async function messages(u, id, limit) {
         const rows = await api.chat.getMessages(id);
