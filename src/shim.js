@@ -1,6 +1,8 @@
 // Frontend shim: `window.marinara` + a window.fetch that answers the original's `/api/...` calls through the Spindle channel,
 // plus the one trigger handler. Everything else (UI, storage format, lorebook sync) is the pinned original's own code.
-const RE_API = /^(?:https?:\/\/[^/]+)?\/api\//;
+// the original's calls are /api/<chats|lorebooks|...>; Lumiverse's own API lives under /api/v1/ (plus /api/auth, /api/ws...) and must never be answered by us
+const RE_API = /^(?:https?:\/\/[^/]+)?\/api\/(?!v\d+(?:\/|$)|auth(?:\/|$)|ws(?:\/|$)|spindle(?:\/|$))/;
+export const isOriginalApi = u => RE_API.test(String(u));
 
 const uid = () => { try { const c = globalThis.crypto; if (c?.randomUUID) return c.randomUUID(); } catch { /* insecure origin */ } return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`; };
 function response(status, data) {

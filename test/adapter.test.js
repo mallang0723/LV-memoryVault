@@ -13,22 +13,28 @@ import { start } from '../src/backend.js';
 const rows = (turns, from = 0) => { const out = []; for (let i = 0; i < turns; i++) { const n = from + i * 2; out.push({ number: n + 1, role: 'user', name: '나', content: `u${n}` }, { number: n + 2, role: 'assistant', name: '하나', content: `a${n}` }); } return out; };
 const memStore = () => { const m = new Map(); return { m, load: async id => (m.has(id) ? structuredClone(m.get(id)) : null), save: async (id, s) => { m.set(id, structuredClone(s)); } }; };
 
-test('trigger: baseline first, one entry per N user turns, raw text of exactly those turns', async () => {
+test('trigger: an older chat starts counting from now; one entry per N user turns, raw text of exactly those turns', async () => {
     const t = createTrigger({ every: 10, store: memStore() });
-    assert.equal(await t.onGenerationEnded('c1', rows(3)), null, 'first sight = baseline');
-    assert.equal(await t.onGenerationEnded('c1', rows(12)), null, '9 new turns: not yet');
-    const e = await t.onGenerationEnded('c1', rows(13));
-    assert.ok(e); assert.match(e.title, /최근 10턴/); assert.match(e.content, /\[사용자\] u6/); assert.doesNotMatch(e.content, /u4\b/, 'older turns are not repeated');
-    assert.equal(await t.onGenerationEnded('c1', rows(13)), null, 'same turn count again: no duplicate');
+    assert.equal(await t.onGenerationEnded('c1', rows(30)), null, 'first sight of a chat that already has >= N turns = baseline (nothing summarised retroactively)');
+    assert.equal(await t.onGenerationEnded('c1', rows(39)), null, '9 new turns: not yet');
+    const e = await t.onGenerationEnded('c1', rows(40));
+    assert.ok(e); assert.match(e.title, /최근 10턴/); assert.match(e.content, /\[사용자\] u60/); assert.doesNotMatch(e.content, /u58\b/, 'older turns are not repeated');
+    assert.equal(await t.onGenerationEnded('c1', rows(40)), null, 'same turn count again: no duplicate');
+});
+test('trigger: a young chat counts from its very first message (first sight late is fine)', async () => {
+    const t = createTrigger({ every: 10, store: memStore() });
+    assert.equal(await t.onGenerationEnded('n', rows(3)), null);
+    const e = await t.onGenerationEnded('n', rows(10));
+    assert.ok(e, 'fires at the 10th user turn, not the 13th'); assert.match(e.content, /\[사용자\] u0\b/, 'starts at the first message');
 });
 test('trigger: counter and entries survive a restart (persisted per chat)', async () => {
     const store = memStore();
     const a = createTrigger({ every: 5, store });
     await a.onGenerationEnded('c1', rows(2));
-    await a.onGenerationEnded('c1', rows(4));          // 2 turns after baseline
+    await a.onGenerationEnded('c1', rows(4));          // 4 turns counted
     const b = createTrigger({ every: 5, store });        // "restart": new object, same storage
-    assert.equal(await b.onGenerationEnded('c1', rows(6)), null);   // 4 since baseline
-    const e = await b.onGenerationEnded('c1', rows(7));            // 5 since baseline: fires
+    assert.equal(await b.onGenerationEnded('c1', rows(4)), null);
+    const e = await b.onGenerationEnded('c1', rows(5));            // the 5th turn: fires
     assert.ok(e, 'turns counted before the restart still count');
     const c = createTrigger({ every: 5, store });
     assert.equal((await c.entries('c1')).length, 1, 'entries are reloaded for the original to see');
@@ -36,7 +42,7 @@ test('trigger: counter and entries survive a restart (persisted per chat)', asyn
 test('trigger: N is read per call (user-configurable), rollback/hidden/empty handled, only the newest entries are kept', async () => {
     let n = 10; const t = createTrigger({ every: () => n, store: memStore() });
     await t.onGenerationEnded('c', rows(1));
-    n = 3; assert.ok(await t.onGenerationEnded('c', rows(4)), 'lowered N applies immediately');
+    n = 3; assert.ok(await t.onGenerationEnded('c', rows(4)), 'lowered N applies immediately (4 turns since the start of a young chat)');
     assert.equal(await t.onGenerationEnded('c', rows(2)), null, 'messages deleted: no negative counts'); // lastUsers reset to 2
     assert.ok(await t.onGenerationEnded('c', rows(5)), 'and counting continues from the new length');
     const e = await t.onGenerationEnded('c', rows(8).map(r => (r.number > 12 ? { ...r, extra: { hidden: true } } : r))); assert.ok(e); assert.doesNotMatch(e.content, /u12/, 'hidden messages are not summarised');
@@ -128,4 +134,10 @@ test('contract: every endpoint the pinned original calls is routed', () => {
         assert.deepEqual(missing, []);
         assert.ok(!/api\([^)]*\)[^;]*method:\s*"(DELETE|PUT)"/.test(src));
     } finally { stop(); }
+});
+
+test('shim: only the original\'s /api/ paths are ours; Lumiverse\'s own /api/v1 (and auth/ws) pass through', async () => {
+    const { isOriginalApi } = await import('../src/shim.js');
+    for (const u of ['/api/chats/abc', '/api/lorebooks?chatId=x', '/api/generate/raw', '/api/connections', 'http://qa.test/api/chats', '/api/_storage']) assert.equal(isOriginalApi(u), true, u);
+    for (const u of ['/api/v1/chats', '/api/v1', '/api/v2/x', '/api/auth/sign-in', '/api/ws', '/qa/harness.html', 'https://example.com/other/api/chats']) assert.equal(isOriginalApi(u), false, u);
 });

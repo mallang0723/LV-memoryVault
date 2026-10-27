@@ -288,8 +288,11 @@ function createTrigger({ every = EVERY_DEFAULT, store = null, now = () => new Da
     const users = rows.filter((r) => r.role === "user").length, last = rows.at(-1)?.number ?? 0;
     let s = await stateOf(chatId);
     if (!s) {
-      await persist(chatId, { lastUsers: users, from: last + 1, entries: [] });
-      return null;
+      const first = rows[0]?.number ?? 1, every = await getEvery();
+      s = users < every ? { lastUsers: 0, from: first, entries: [] } : { lastUsers: users, from: last + 1, entries: [] };
+      await persist(chatId, s);
+      if (users < every)
+        return null;
     }
     if (users < s.lastUsers) {
       s = { ...s, lastUsers: users, from: Math.min(s.from, last + 1) };

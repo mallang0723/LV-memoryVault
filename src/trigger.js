@@ -23,7 +23,13 @@ export function createTrigger({ every = EVERY_DEFAULT, store = null, now = () =>
     async function step(chatId, rows) {
         const users = rows.filter(r => r.role === 'user').length, last = rows.at(-1)?.number ?? 0;
         let s = await stateOf(chatId);
-        if (!s) { await persist(chatId, { lastUsers: users, from: last + 1, entries: [] }); return null; }   // first sight: baseline only
+        if (!s) {   // first sight of this chat
+            const first = rows[0]?.number ?? 1, every = await getEvery();
+            // a young chat (fewer turns than N) counts from its very first message; an older one starts counting from now (nothing is summarised retroactively)
+            s = users < every ? { lastUsers: 0, from: first, entries: [] } : { lastUsers: users, from: last + 1, entries: [] };
+            await persist(chatId, s);
+            if (users < every) return null;
+        }
         if (users < s.lastUsers) { s = { ...s, lastUsers: users, from: Math.min(s.from, last + 1) }; await persist(chatId, s); return null; }   // messages deleted / rolled back
         if (users - s.lastUsers < await getEvery()) return null;
         const slice = rows.filter(r => r.number >= s.from && r.role !== 'system' && !r.extra?.hidden && String(r.content || '').trim());

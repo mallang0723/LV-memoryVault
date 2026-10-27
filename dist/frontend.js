@@ -1,5 +1,5 @@
 // src/shim.js
-var RE_API = /^(?:https?:\/\/[^/]+)?\/api\//;
+var RE_API = /^(?:https?:\/\/[^/]+)?\/api\/(?!v\d+(?:\/|$)|auth(?:\/|$)|ws(?:\/|$)|spindle(?:\/|$))/;
 var uid = () => {
   try {
     const c = globalThis.crypto;
