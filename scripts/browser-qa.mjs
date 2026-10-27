@@ -74,10 +74,10 @@ function measure({ rootSel, secondarySel, mainScrollers, detailOn }) {
     };
 }
 // secondary text (>= 13px): captions, chips/labels, counters, kickers. Everything else (buttons, fields, body copy) must be >= 15px.
-const SECONDARY = 'small, sup, time, code, em, i, [class*="hint"], [class*="meta"], [class*="badge"], [class*="count"], [class*="muted"], [class*="foot"], [class*="note"], [class*="sub"], [class*="chip"], [class*="kicker"], [class*="eyebrow"], [class*="pill"], [class*="ticket-no"], [class*="tab-short"], [class*="theme-check"], [class*="status"], .mvx-hint';
+const SECONDARY = 'small, sup, time, code, em, i, [class*="hint"], [class*="meta"], [class*="badge"], [class*="count"], [class*="muted"], [class*="foot"], [class*="note"], [class*="sub"], [class*="chip"], [class*="kicker"], [class*="eyebrow"], [class*="pill"], [class*="ticket-no"], [class*="tab-short"], [class*="theme-check"], [class*="status"], [class*="byline"], .mmc-kv span, pre, .mvx-hint';
 const TARGETS = {
     adapter: { rootSel: '#mvx-overlay .mvx-card', mainScrollers: ['.mvx-body'] },
-    original: { rootSel: '#mmc-root-v1', mainScrollers: (process.env.QA_ORIGINAL_SCROLLERS || '.mmc-layer-body,.mmc-main,.mmc-content,.mmc-body,.mmc-scroll,.mmc-panel,.mmc-shell,.mmc-side,.mmc-sidebar,.mmc-pane,.mmc-list,textarea').split(',') },
+    original: { rootSel: '#mmc-root-v1', mainScrollers: (process.env.QA_ORIGINAL_SCROLLERS || '.mmc-layer-body,.mmc-wiki-main,.mmc-wiki-list,.mmc-main,.mmc-content,.mmc-body,.mmc-scroll,.mmc-panel,.mmc-shell,.mmc-side,.mmc-sidebar,.mmc-pane,.mmc-list,textarea').split(',') },
     launcher: { rootSel: '#mmc-launcher-v1', mainScrollers: [] },
 };
 

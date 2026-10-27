@@ -1466,6 +1466,10 @@ var ORIGINAL_CSS = `/* 기억 보관함 v2.0.0 · 전역 테마 하나(리본 �
 #mmc-root-v1 .mmc-btn.mmc-sm,#mmc-root-v1 .mmc-btn.mmc-sm span{font-size:15px}
 #mmc-root-v1 .mmc-theme-check{font-size:13px}
 #mmc-root-v1[data-mmc-theme="green"],.mmc-launcher[data-mmc-theme="green"],.mmc-toast[data-mmc-theme="green"]{--mv-accent:#00796b;--mv-wiki-head:#00796b}
+/* tablet widths: seven long tab labels no longer fit at the larger type; use the short labels the original already uses on phones */
+@media (min-width:701px) and (max-width:1100px){#mmc-root-v1 .mmc-tab-long{display:none}#mmc-root-v1 .mmc-tab-short{display:inline}#mmc-root-v1 .mmc-tabs{padding:0 6px}#mmc-root-v1 .mmc-tab{padding:0 9px;gap:5px}}
+#mmc-root-v1 .mmc-label,#mmc-root-v1 .mmc-sync span{font-size:15px}
+#mmc-root-v1 .mmc-detail-empty small,#mmc-root-v1 .mmc-wiki-byline{font-size:13px}
 `;
 function runOriginal(marinara) {
   (() => {
