@@ -2,6 +2,7 @@ import { installShim } from './shim.js';
 import { installConfirmGuard } from './confirm-guard.js';
 import { createPanel } from './panel.js';
 import { installHostTheme } from './host-theme.js';
+import { installLauncherDrag } from './launcher-drag.js';
 import { runOriginal, ORIGINAL_CSS } from './original.generated.js';
 
 export function setup(ctx, { win = globalThis.window, doc = globalThis.document } = {}) {
@@ -16,6 +17,7 @@ export function setup(ctx, { win = globalThis.window, doc = globalThis.document 
     (doc.head || doc.documentElement).append(style);
     const hostTheme = installHostTheme(win, doc);   // after the original css: same specificity, last one wins
 
+    const drag = installLauncherDrag(win, doc, { notify: (m, d) => panel.toast(m, d) });   // moves the original's floating tab; tap still opens
     let run = null, runFor = '', timer = null, alive = true;
     const mount = () => { syncKey(); runFor = activeId(); run = shim.createMarinara(); runOriginal(run.marinara); };   // the pinned original, byte-identical
     const modalOpen = () => { const r = doc.getElementById('mmc-root-v1'); return !!r && !r.hidden; };
@@ -31,5 +33,5 @@ export function setup(ctx, { win = globalThis.window, doc = globalThis.document 
     for (const ev of ['CHAT_SWITCHED', 'CHAT_CHANGED']) { try { const o = ctx.events?.on?.(ev, () => { timer = setTimeout(onSwitch, 0); }); if (typeof o === 'function') offs.push(o); } catch { /* optional */ } }
     try { const o = ctx.state?.subscribe?.('chat.active', () => { timer = setTimeout(onSwitch, 0); }); if (typeof o === 'function') offs.push(o); } catch { /* optional */ }
     void panel.promptIfMigrationPending();   // after an upgrade from 0.4.x: offer backup + import once per page load
-    return () => { alive = false; clearTimeout(timer); offs.forEach(o => { try { o(); } catch { /* ignore */ } }); run?.runCleanups(); guard.dispose(); hostTheme.dispose(); panel.dispose(); shim.dispose(); style.remove(); };
+    return () => { alive = false; clearTimeout(timer); offs.forEach(o => { try { o(); } catch { /* ignore */ } }); run?.runCleanups(); guard.dispose(); drag.dispose(); hostTheme.dispose(); panel.dispose(); shim.dispose(); style.remove(); };
 }

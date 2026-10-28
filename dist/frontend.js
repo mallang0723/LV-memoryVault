@@ -616,6 +616,214 @@ function installHostTheme(win, doc) {
   } };
 }
 
+// src/launcher-drag.js
+var DRAG_THRESHOLD = 8;
+var LONG_PRESS_MS = 700;
+var EDGE_GAP = 4;
+var KEY = "mvx-launcher-pos-v1";
+function clampPos({ x, y }, { w, h }, { vw, vh }, ins = {}, gap = EDGE_GAP) {
+  const minX = (ins.left || 0) + gap, minY = (ins.top || 0) + gap;
+  const maxX = Math.max(minX, vw - (ins.right || 0) - gap - w), maxY = Math.max(minY, vh - (ins.bottom || 0) - gap - h);
+  return { x: Math.round(Math.min(maxX, Math.max(minX, Number.isFinite(x) ? x : maxX))), y: Math.round(Math.min(maxY, Math.max(minY, Number.isFinite(y) ? y : minY))) };
+}
+function toFrac({ x, y }, size, view, ins = {}, gap = EDGE_GAP) {
+  const lo = clampPos({ x: -1e9, y: -1e9 }, size, view, ins, gap), hi = clampPos({ x: 1e9, y: 1e9 }, size, view, ins, gap);
+  return { fx: hi.x === lo.x ? 1 : (x - lo.x) / (hi.x - lo.x), fy: hi.y === lo.y ? 0 : (y - lo.y) / (hi.y - lo.y) };
+}
+function fromFrac({ fx, fy }, size, view, ins = {}, gap = EDGE_GAP) {
+  const lo = clampPos({ x: -1e9, y: -1e9 }, size, view, ins, gap), hi = clampPos({ x: 1e9, y: 1e9 }, size, view, ins, gap);
+  const f = (v) => Math.min(1, Math.max(0, Number.isFinite(v) ? v : 0));
+  return clampPos({ x: lo.x + f(fx) * (hi.x - lo.x), y: lo.y + f(fy) * (hi.y - lo.y) }, size, view, ins, gap);
+}
+function parseStored(raw) {
+  try {
+    const o = JSON.parse(raw);
+    return o && Number.isFinite(o.fx) && Number.isFinite(o.fy) ? { fx: o.fx, fy: o.fy } : null;
+  } catch {
+    return null;
+  }
+}
+function installLauncherDrag(win, doc, { id = "mmc-launcher-v1", notify = () => {}, storage } = {}) {
+  const store = { get() {
+    try {
+      return (storage || win.localStorage).getItem(KEY);
+    } catch {
+      return null;
+    }
+  }, set(v) {
+    try {
+      (storage || win.localStorage).setItem(KEY, v);
+    } catch {}
+  }, del() {
+    try {
+      (storage || win.localStorage).removeItem(KEY);
+    } catch {}
+  } };
+  let el = null, saved = parseStored(store.get()), probe = null;
+  let g = null;
+  let swallow = false;
+  const insets = () => {
+    try {
+      if (!probe) {
+        probe = doc.createElement("div");
+        probe.setAttribute("aria-hidden", "true");
+        probe.style.cssText = "position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none;padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)";
+        doc.body.append(probe);
+      }
+      const s = win.getComputedStyle(probe);
+      return { top: parseFloat(s.paddingTop) || 0, right: parseFloat(s.paddingRight) || 0, bottom: parseFloat(s.paddingBottom) || 0, left: parseFloat(s.paddingLeft) || 0 };
+    } catch {
+      return {};
+    }
+  };
+  const view = () => {
+    return { vw: Math.round(win.innerWidth || doc.documentElement.clientWidth), vh: Math.round(win.innerHeight || doc.documentElement.clientHeight) };
+  };
+  const size = () => {
+    const r = el.getBoundingClientRect();
+    return { w: Math.max(44, r.width), h: Math.max(44, r.height) };
+  };
+  const place = (p) => {
+    el.classList.add("mvx-moved");
+    const s = el.style;
+    s.setProperty("left", p.x + "px", "important");
+    s.setProperty("top", p.y + "px", "important");
+    s.setProperty("right", "auto", "important");
+    s.setProperty("bottom", "auto", "important");
+  };
+  const unplace = () => {
+    el.classList.remove("mvx-moved");
+    for (const k of ["left", "top", "right", "bottom"])
+      el.style.removeProperty(k);
+  };
+  const apply = () => {
+    if (!el)
+      return;
+    if (!saved) {
+      unplace();
+      return;
+    }
+    const { vw, vh } = view();
+    place(fromFrac(saved, size(), { vw, vh }, insets()));
+  };
+  function reset() {
+    saved = null;
+    store.del();
+    if (el)
+      unplace();
+  }
+  function onDown(e) {
+    if (e.button > 0 || g && g.id !== e.pointerId)
+      return;
+    const r = el.getBoundingClientRect();
+    g = { id: e.pointerId, sx: e.clientX, sy: e.clientY, ox: r.left, oy: r.top, dragging: false, long: false, timer: null };
+    try {
+      el.setPointerCapture?.(e.pointerId);
+    } catch {}
+    g.timer = win.setTimeout(() => {
+      if (g && !g.dragging) {
+        g.long = true;
+        swallow = true;
+        reset();
+        notify("기억 버튼 위치를 처음으로 돌렸어요.");
+      }
+    }, LONG_PRESS_MS);
+  }
+  function onMove(e) {
+    if (!g || e.pointerId !== g.id || g.long)
+      return;
+    const dx = e.clientX - g.sx, dy = e.clientY - g.sy;
+    if (!g.dragging) {
+      if (Math.hypot(dx, dy) < DRAG_THRESHOLD)
+        return;
+      g.dragging = true;
+      win.clearTimeout(g.timer);
+    }
+    e.preventDefault?.();
+    const { vw, vh } = view();
+    place(clampPos({ x: g.ox + dx, y: g.oy + dy }, size(), { vw, vh }, insets()));
+  }
+  function onUp(e) {
+    if (!g || e.pointerId !== g.id)
+      return;
+    win.clearTimeout(g.timer);
+    try {
+      el.releasePointerCapture?.(e.pointerId);
+    } catch {}
+    if (g.dragging && e.type === "pointerup") {
+      const r = el.getBoundingClientRect(), { vw, vh } = view();
+      saved = toFrac({ x: r.left, y: r.top }, size(), { vw, vh }, insets());
+      store.set(JSON.stringify(saved));
+    }
+    if (g.dragging || g.long) {
+      swallow = true;
+      win.setTimeout(() => {
+        swallow = false;
+      }, 400);
+    }
+    g = null;
+  }
+  const onClick = (e) => {
+    if (swallow && el && (e.target === el || el.contains(e.target))) {
+      swallow = false;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+    }
+  };
+  const onCtx = (e) => {
+    if (e.target === el || el?.contains?.(e.target))
+      e.preventDefault();
+  };
+  const onResize = () => apply();
+  function attach(node) {
+    if (el === node)
+      return;
+    el = node;
+    el.style.touchAction = "none";
+    el.style.userSelect = "none";
+    el.style.setProperty("-webkit-user-select", "none");
+    el.style.setProperty("-webkit-touch-callout", "none");
+    el.addEventListener("pointerdown", onDown);
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", onUp);
+    el.addEventListener("pointercancel", onUp);
+    apply();
+  }
+  const scan = () => {
+    const n = doc.getElementById(id);
+    if (n && n !== el)
+      attach(n);
+    else if (!n)
+      el = null;
+  };
+  let mo = null;
+  try {
+    mo = new win.MutationObserver(scan);
+    mo.observe(doc.body, { childList: true });
+  } catch {}
+  scan();
+  win.addEventListener("click", onClick, true);
+  win.addEventListener("contextmenu", onCtx, true);
+  win.addEventListener("resize", onResize);
+  win.addEventListener("orientationchange", onResize);
+  return {
+    reset,
+    apply,
+    get saved() {
+      return saved;
+    },
+    dispose() {
+      mo?.disconnect();
+      win.removeEventListener("click", onClick, true);
+      win.removeEventListener("contextmenu", onCtx, true);
+      win.removeEventListener("resize", onResize);
+      win.removeEventListener("orientationchange", onResize);
+      win.clearTimeout(g?.timer);
+      probe?.remove();
+    }
+  };
+}
+
 // src/original.generated.js
 var ORIGINAL_CSS = `/* 기억 보관함 v2.0.0 · 전역 테마 하나(리본 라일락·스토리 로즈·아카이브 그린·마리나라 따르기)가 보관함과 이야기 위키를 함께 칠한다 */
 #mmc-root-v1,.mmc-launcher,.mmc-toast{--fs:1;--t-2xs:calc(10.5px*var(--fs));--t-xs:calc(11.5px*var(--fs));--t-sm:calc(12.5px*var(--fs));--t-md:calc(13.5px*var(--fs));--t-lg:calc(15px*var(--fs));--t-xl:calc(17px*var(--fs));--t-2xl:calc(22px*var(--fs));--t-3xl:calc(28px*var(--fs));--mv-font:var(--font-y2k,var(--font-user,-apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif));--mv-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--mv-r:12px;--mv-r-sm:8px;font-family:var(--mv-font);}
@@ -1490,6 +1698,9 @@ var ORIGINAL_CSS = `/* 기억 보관함 v2.0.0 · 전역 테마 하나(리본 �
 @media (min-width:701px) and (max-width:1100px){#mmc-root-v1 .mmc-tab-long{display:none}#mmc-root-v1 .mmc-tab-short{display:inline}#mmc-root-v1 .mmc-tabs{padding:0 6px}#mmc-root-v1 .mmc-tab{padding:0 9px;gap:5px}}
 #mmc-root-v1 .mmc-label,#mmc-root-v1 .mmc-sync span{font-size:15px}
 #mmc-root-v1 .mmc-detail-empty small,#mmc-root-v1 .mmc-wiki-byline{font-size:13px}
+/* draggable launcher (src/launcher-drag.js): once moved off the right edge it is a full rounded tab; keep 44px target and block page scroll while dragging */
+.mmc-launcher{touch-action:none;min-width:44px;min-height:44px}
+.mmc-launcher.mvx-moved{border-right:1px solid color-mix(in srgb,var(--mv-accent) 70%,#000);border-radius:14px;box-shadow:0 6px 18px rgba(0,0,0,.22)}
 `;
 function runOriginal(marinara) {
   (() => {
@@ -11451,6 +11662,7 @@ function setup(ctx, { win = globalThis.window, doc = globalThis.document } = {})
   style.textContent = ORIGINAL_CSS;
   (doc.head || doc.documentElement).append(style);
   const hostTheme = installHostTheme(win, doc);
+  const drag = installLauncherDrag(win, doc, { notify: (m, d) => panel.toast(m, d) });
   let run = null, runFor = "", timer = null, alive = true;
   const mount = () => {
     syncKey();
@@ -11502,6 +11714,7 @@ function setup(ctx, { win = globalThis.window, doc = globalThis.document } = {})
     });
     run?.runCleanups();
     guard.dispose();
+    drag.dispose();
     hostTheme.dispose();
     panel.dispose();
     shim.dispose();
