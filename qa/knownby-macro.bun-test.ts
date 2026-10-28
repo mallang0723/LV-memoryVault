@@ -1,10 +1,12 @@
 import { describe, test, expect, beforeAll } from "bun:test";
-import { evaluate } from "/home/syhekate/Lumiverse/src/macros/MacroEvaluator";
-import { parse } from "/home/syhekate/Lumiverse/src/macros/MacroParser";
-import { registry } from "/home/syhekate/Lumiverse/src/macros/MacroRegistry";
-import { withJsonBlocksProtected } from "/home/syhekate/Lumiverse/src/macros/json-blocks";
-import { initMacros, withPromptBlockContext } from "/home/syhekate/Lumiverse/src/macros/index";
-import type { MacroEnv } from "/home/syhekate/Lumiverse/src/macros/types";
+const SRC = process.env.LUMI_SRC;   // host source tree (read only)
+if (!SRC) throw new Error("LUMI_SRC required");
+const { evaluate } = await import(`${SRC}/src/macros/MacroEvaluator`);
+const { parse } = await import(`${SRC}/src/macros/MacroParser`);
+const { registry } = await import(`${SRC}/src/macros/MacroRegistry`);
+const { withJsonBlocksProtected } = await import(`${SRC}/src/macros/json-blocks`);
+const { initMacros, withPromptBlockContext } = await import(`${SRC}/src/macros/index`);
+type MacroEnv = any;   // shape comes from the host tree
 
 // ---------------------------------------------------------------------------
 // Test helpers

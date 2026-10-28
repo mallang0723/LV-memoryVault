@@ -7,8 +7,9 @@
 // Host themes: a dark and a light one of qa/host-themes.json. Per view: horizontal overflow, text >= 15px (secondary >= 13px), tap targets
 // >= 44px, contrast >= 4.5:1, no dead nested scroll box, no request leaving the page, no console errors.
 // Tools are not dependencies: PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs, FIREFOX_BIN, CHROMIUM_BIN. Port 0 = random.
-// Screenshots + qa-report.json go to QA_SHOT_DIR (default ~/chapssal/work/memoryvault-rebuild-receipts), outside the repo.
+// Screenshots + qa-report.json go to QA_SHOT_DIR (default <tmpdir>/memoryvault-qa-receipts), outside the repo.
 import { createServer } from 'node:http';
+import { spawn } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -17,10 +18,11 @@ import { createQaServer } from './qa-server.mjs';
 const pw = await import(process.env.PLAYWRIGHT_MODULE || 'playwright').catch(e => { console.error('Playwright not found (set PLAYWRIGHT_MODULE):', e.message); process.exit(2); });
 const only = (process.env.QA_ONLY || '').split(',').filter(Boolean);
 const originsWanted = (process.env.QA_ORIGINS || '').split(',').filter(Boolean);
-const shotDir = process.env.QA_SHOT_DIR || path.join(os.homedir(), 'chapssal/work/memoryvault-rebuild-receipts');
+const shotDir = process.env.QA_SHOT_DIR || path.join(os.tmpdir(), 'memoryvault-qa-receipts');
 const VIEWPORTS = [{ width: 360, height: 640, touch: true }, { width: 390, height: 844, touch: true }, { width: 768, height: 1024, touch: true }, { width: 1280, height: 800, touch: false }, { width: 1280, height: 600, touch: false }];
 const HOST_THEMES = ['default-dark', 'lumiverse-light'];
 const root = process.cwd();
+const repoCommit = await new Promise(r => { const p = spawn('git', ['-C', root, 'rev-parse', 'HEAD']); let o = ''; p.stdout.on('data', d => (o += d)); p.on('error', () => r(null)); p.on('close', () => r(o.trim() || null)); });
 const qa = await createQaServer(root);
 const server = createServer(async (req, res) => {
     let body = ''; for await (const c of req) body += c;
@@ -297,7 +299,7 @@ try {
 } finally { server.close(); }
 
 const summary = { ok: failures.length === 0, variants: new Set(rows.map(r => r.tag)).size, views: rows.length, failures: failures.length };
-await writeFile(path.join(shotDir, 'qa-report.json'), JSON.stringify({ summary, failures, env: envRows, notes, flows, rows: rows.map(({ examples, ...r }) => r) }, null, 1));
+await writeFile(path.join(shotDir, 'qa-report.json'), JSON.stringify({ repoCommit, summary, failures, secondaryException: 'pre blocks (evidence quote, injection preview, wiki code block) are judged at >=13px, not 15px', env: envRows, notes, flows, rows: rows.map(({ examples, ...r }) => r) }, null, 1));
 console.log(JSON.stringify(summary));
 for (const f of failures) console.log('FAIL ' + f);
 for (const n of notes) console.log('NOTE ' + n);

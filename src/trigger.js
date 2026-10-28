@@ -4,6 +4,8 @@
 // State per chat is persisted (userStorage via `store`) so a restart does not lose the turn count or the entries.
 export const EVERY_DEFAULT = 10, EVERY_MIN = 3, EVERY_MAX = 100;
 const KEEP = 5, MAX_CHARS = 120_000;
+// a range that was deleted and regenerated holds other message ids, so it gets a new trigger id
+const rangeHash = slice => { let h = 2166136261; for (const r of slice) for (const ch of `${r.id ?? ''}|${r.number}|`) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; } return h.toString(36); };
 export const clampEvery = v => { const n = Math.trunc(Number(v)); return Number.isFinite(n) ? Math.min(EVERY_MAX, Math.max(EVERY_MIN, n)) : EVERY_DEFAULT; };
 
 /** store: { load(chatId) -> Promise<state|null>, save(chatId, state) -> Promise }. every: number | () => number | Promise. */
@@ -38,7 +40,7 @@ export function createTrigger({ every = EVERY_DEFAULT, store = null, now = () =>
         let content = slice.map(r => `${r.role === 'user' ? '[사용자]' : `[${r.name || '캐릭터'}]`} ${r.content}`).join('\n\n');
         if (content.length > MAX_CHARS) content = content.slice(content.length - MAX_CHARS);   // keep the newest text
         const turns = slice.filter(r => r.role === 'user').length;
-        const entry = { id: `mv-${chatId.slice(0, 8)}-${slice[0].number}-${slice.at(-1).number}`, title: `최근 ${turns}턴 대화 (#${slice[0].number}–#${slice.at(-1).number})`, content, enabled: true, origin: 'memory-cabinet-adapter', createdAt: now(), updatedAt: now() };
+        const entry = { id: `mv-${chatId.slice(0, 8)}-${slice[0].number}-${slice.at(-1).number}-${rangeHash(slice)}`, title: `최근 ${turns}턴 대화 (#${slice[0].number}–#${slice.at(-1).number})`, content, enabled: true, origin: 'memory-cabinet-adapter', createdAt: now(), updatedAt: now() };
         next.entries = [...s.entries.filter(e => e.id !== entry.id), entry].slice(-KEEP);
         await persist(chatId, next);
         return entry;

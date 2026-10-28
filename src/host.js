@@ -64,6 +64,7 @@ export function createHost(api, { summaries } = {}) {
         });
     }
     async function messages(u, id, limit) {
+        if (!(await api.chats.get(id, need(u)))) throw err('채팅을 찾지 못했습니다.', 404);   // api.chat.getMessages has no user scope: check ownership first
         const rows = await api.chat.getMessages(id);
         const all = (rows || []).map(m => ({ id: m.id, role: m.role === 'system' ? 'system' : m.is_user ? 'user' : 'assistant', content: m.content || '', name: m.name || '', createdAt: iso(m.created_at || m.send_date), number: (m.index_in_chat ?? 0) + 1, extra: { hidden: m.extra?.hidden === true } })).sort((a, b) => a.number - b.number);
         return limit ? all.slice(-Math.max(1, Math.min(500, limit))) : all;

@@ -7,6 +7,10 @@ import manifest from '../spindle.json' with { type: 'json' };
 
 const PERMS = ['chats', 'chat_mutation', 'generation', 'world_books', 'characters'];
 const safeId = id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id);
+// An existing memoryCabinetV1 is overwritten only when it is absent or still the untouched default (no items, no field beyond the basics).
+// Anything else (items, lorebookId, elementMemory, ...) belongs to the original and is never replaced or merged: the chat is skipped.
+const BASIC = new Set(['version', 'ownerChatId', 'enabled', 'items']);
+const pristine = v => v == null || (typeof v === 'object' && !Array.isArray(v) && !(Array.isArray(v.items) && v.items.length) && Object.keys(v).every(k => BASIC.has(k)));
 const fail = (message, status) => Object.assign(new Error(message), { status });
 
 export function start(api, options = {}) {
@@ -73,10 +77,11 @@ export function start(api, options = {}) {
         return next;
     });
     // one tab wins the right to let the original observe a trigger (so two open tabs do not analyse the same turns twice)
-    const claimed = new Map();   // triggerId -> time
-    router.add('POST', '_trigger/claim', ({ body }) => {
-        const id = String(body?.id || '');
-        if (!id) return { ok: false };
+    const claimed = new Map();   // userId + triggerId -> time (per user: another user's identical id must not block this one)
+    router.add('POST', '_trigger/claim', ({ userId, body }) => {
+        const raw = String(body?.id || '');
+        if (!raw) return { ok: false };
+        const id = `${userId}\u0000${raw}`;
         const now = Date.now();
         for (const [k, t] of claimed) if (now - t > 600_000) claimed.delete(k);
         if (claimed.has(id)) return { ok: false };
@@ -130,9 +135,13 @@ export function start(api, options = {}) {
             if (!files.data?.items?.length) continue;
             const c = await api.chats.get(chatId, userId).catch(() => null);
             if (!c) { out[chatId] = { skipped: 'chat gone' }; continue; }
-            if (c.metadata?.memoryCabinetV1?.items?.length) { out[chatId] = { skipped: 'already has original data' }; continue; }
+            if (!pristine(c.metadata?.memoryCabinetV1)) { out[chatId] = { skipped: 'already has original data' }; continue; }
             const { data, report } = mapOldToOriginal(files.data, { chatId });
             if (!data.items.length) { out[chatId] = { skipped: 'nothing importable', ...report }; continue; }
+            // R4: re-read right before the write; the original may have saved its own data since the first read
+            const again = await api.chats.get(chatId, userId).catch(() => null);
+            if (!again) { out[chatId] = { skipped: 'chat gone' }; continue; }
+            if (!pristine(again.metadata?.memoryCabinetV1)) { out[chatId] = { skipped: 'already has original data' }; continue; }
             await host.patchMetadata(userId, chatId, { memoryCabinetV1: data });
             out[chatId] = report;
         }

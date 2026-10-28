@@ -19,7 +19,7 @@ export function createFakeHost({ modelReply = '[]', chatId = 'chat1' } = {}) {
         sendToFrontend(msg) { toFront.push(msg); queueMicrotask(() => frontListener?.(msg)); },
         chats: {
             list: async o => page([...chats.values()], o),
-            get: async id => (chats.has(id) ? structuredClone(chats.get(id)) : null),
+            get: async (id, u) => (chats.has(id) && (!chats.get(id).owner || chats.get(id).owner === u) ? structuredClone(chats.get(id)) : null),   // optional `owner` = user scope like the real host
             update: async (id, input) => { const c = chats.get(id); calls.chatsUpdate.push(structuredClone(input)); if (input.metadata) c.metadata = structuredClone(input.metadata); if (input.name) c.name = input.name; return structuredClone(c); },
         },
         chat: { getMessages: async id => structuredClone(msgsByChat.get(id) || []) },

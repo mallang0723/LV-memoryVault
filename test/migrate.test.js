@@ -68,3 +68,31 @@ test('the pinned original loads the migrated memoryCabinetV1 and lists the items
         assert.equal(host.chat.metadata.memoryCabinetV1.items.length, 4, 'opening the vault did not wipe or duplicate migrated data');
     } finally { stopF(); stopB(); }
 });
+
+test('apply never clobbers an existing memoryCabinetV1 (Honey condition 1)', async () => {
+    const { start } = await import('../src/backend.js?m' + Math.random());
+    const run = async existing => {
+        const host = createFakeHost();
+        host.store.set('chats/chat1/data.json', OLD);
+        if (existing !== undefined) host.chat.metadata.memoryCabinetV1 = existing;
+        const stop = start(host.api, { afterMs: 0 });
+        const rpc = (id, method, path, body) => new Promise(res => { const off = host.ctx.onBackendMessage(m => { if (m.requestId === id) { off(); res(m); } }); host.handlers.frontend({ requestId: id, type: 'api', method, path, body }, 'user1'); });
+        await rpc('b', 'GET', '_migrate/backup');
+        const reply = await rpc('a', 'POST', '_migrate/apply', { confirmBackup: true });
+        stop();
+        return { host, reply };
+    };
+    // Honey's counterexample: no items, but a managed lorebook and element memory
+    const mine = { version: 1, ownerChatId: 'chat1', enabled: true, items: [], lorebookId: 'bookX', elementMemory: { entities: [{ id: 'e1', name: '하나' }] } };
+    let r = await run(structuredClone(mine));
+    assert.ok(r.reply.ok, JSON.stringify(r.reply));
+    assert.deepEqual(r.host.chat.metadata.memoryCabinetV1, mine, 'existing object is untouched');
+    assert.equal(r.reply.data.chat1.skipped, 'already has original data');
+    // existing items: also untouched
+    const withItems = { version: 1, ownerChatId: 'chat1', enabled: true, items: [{ id: 'x', type: 'anchor', title: 't', content: 'c' }] };
+    r = await run(structuredClone(withItems));
+    assert.deepEqual(r.host.chat.metadata.memoryCabinetV1, withItems);
+    // absent or pristine default: import happens
+    r = await run(undefined); assert.equal(r.host.chat.metadata.memoryCabinetV1.items.length, 4);
+    r = await run({ version: 1, ownerChatId: 'chat1', enabled: true, items: [] }); assert.equal(r.host.chat.metadata.memoryCabinetV1.items.length, 4);
+});

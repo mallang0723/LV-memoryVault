@@ -1,6 +1,6 @@
 // Real-host e2e against a TEMPORARY Lumiverse instance: the host source tree is run read-only (never modified), with a fresh scratch
 // DATA_DIR, a throwaway owner, a mock OpenAI-compatible LLM, and this repo's built dist installed as extension `memory_cabinet`.
-// env: LUMI_SRC (host tree), PORT (>= 7895, never 7880/7881/10000), LABEL, OUT (receipt dir), SCRATCH (data dir parent), PW (playwright index.mjs),
+// env: LUMI_SRC (host tree), PORT (any free port; DENY_PORTS = comma list of ports that must never be used), LABEL, OUT (receipt dir), SCRATCH (data dir parent), PW (playwright index.mjs),
 //      CHROMIUM_BIN, BUN (default ~/.bun/bin/bun). Stops the host and the mock by PID. No secrets are printed or stored.
 import { spawn } from 'node:child_process';
 import { mkdirSync, rmSync, writeFileSync, cpSync, readdirSync, existsSync, readFileSync } from 'node:fs';
@@ -13,7 +13,8 @@ import os from 'node:os';
 const { LUMI_SRC, PORT: PORT_S, LABEL = 'host', OUT, SCRATCH, PW, CHROMIUM_BIN = '/usr/bin/chromium', BUN = path.join(os.homedir(), '.bun/bin/bun') } = process.env;
 const PORT = Number(PORT_S), MOCK = PORT + 1, BASE = `http://127.0.0.1:${PORT}`, REPO = process.cwd();
 if (!LUMI_SRC || !PORT || !OUT || !SCRATCH || !PW) throw new Error('LUMI_SRC, PORT, OUT, SCRATCH, PW required');
-if ([7880, 7881, 10000].includes(PORT) || [7880, 7881, 10000].includes(MOCK)) throw new Error('forbidden port');
+const DENY = (process.env.DENY_PORTS || '').split(',').filter(Boolean).map(Number);
+if (DENY.includes(PORT) || DENY.includes(MOCK)) throw new Error('forbidden port');
 const { chromium } = await import(pathToFileURL(PW).href);
 const DATA = path.join(SCRATCH, `data-${LABEL}`);
 rmSync(DATA, { recursive: true, force: true }); mkdirSync(DATA, { recursive: true }); mkdirSync(OUT, { recursive: true });
@@ -21,7 +22,7 @@ const USER = 'e2eowner', PASS = randomBytes(9).toString('hex');
 const SC = (process.env.SCENARIOS || '').split(',').filter(Boolean);   // e.g. B or B,D,E (blocks D/E/K reuse chat A from B)
 const want = x => !SC.length || SC.includes(x);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const receipt = { label: LABEL, port: PORT, hostCommit: null, steps: [], notes: [] };
+const receipt = { label: LABEL, port: PORT, hostCommit: null, repoCommit: null, steps: [], notes: [] };
 const step = (name, ok, extra = {}) => { receipt.steps.push({ name, ok, ...extra }); console.log(ok ? 'OK  ' : 'FAIL', name, JSON.stringify(extra).slice(0, 220)); };
 const finish = async code => { writeFileSync(path.join(OUT, `e2e-${LABEL}.json`), JSON.stringify(receipt, null, 1)); await stopAll(); process.exit(code); };
 
@@ -59,6 +60,7 @@ host = spawn(BUN, ['run', 'src/index.ts'], { cwd: LUMI_SRC, env: { ...process.en
 host.stdout.on('data', d => hostLog.push(d.toString())); host.stderr.on('data', d => hostLog.push(d.toString()));
 receipt.hostPid = host.pid;
 for (let i = 0; i < 120; i++) { try { const r = await fetch(BASE + '/'); if (r.status < 500) break; } catch { /* starting */ } await sleep(500); if (i === 119) { step('host started', false); await finish(1); } }
+try { receipt.repoCommit = (await new Promise(r => { const p = spawn('git', ['-C', REPO, 'rev-parse', 'HEAD']); let o = ''; p.stdout.on('data', d => (o += d)); p.on('close', () => r(o.trim())); })) || null; } catch { /* no git */ }
 try { receipt.hostCommit = (await new Promise(r => { const p = spawn('git', ['-C', LUMI_SRC, 'rev-parse', '--short', 'HEAD']); let o = ''; p.stdout.on('data', d => (o += d)); p.on('close', () => r(o.trim() || null)); })); } catch { /* optional */ }
 step('host started (temporary instance)', true, { port: PORT, hostCommit: receipt.hostCommit });
 

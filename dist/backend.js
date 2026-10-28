@@ -153,6 +153,8 @@ function createHost(api, { summaries } = {}) {
     });
   }
   async function messages(u, id, limit) {
+    if (!await api.chats.get(id, need(u)))
+      throw err("\uCC44\uD305\uC744 \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.", 404);
     const rows = await api.chat.getMessages(id);
     const all = (rows || []).map((m) => ({ id: m.id, role: m.role === "system" ? "system" : m.is_user ? "user" : "assistant", content: m.content || "", name: m.name || "", createdAt: iso(m.created_at || m.send_date), number: (m.index_in_chat ?? 0) + 1, extra: { hidden: m.extra?.hidden === true } })).sort((a, b) => a.number - b.number);
     return limit ? all.slice(-Math.max(1, Math.min(500, limit))) : all;
@@ -256,6 +258,15 @@ var EVERY_MIN = 3;
 var EVERY_MAX = 100;
 var KEEP = 5;
 var MAX_CHARS = 120000;
+var rangeHash = (slice) => {
+  let h = 2166136261;
+  for (const r of slice)
+    for (const ch of `${r.id ?? ""}|${r.number}|`) {
+      h ^= ch.charCodeAt(0);
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+  return h.toString(36);
+};
 var clampEvery = (v) => {
   const n = Math.trunc(Number(v));
   return Number.isFinite(n) ? Math.min(EVERY_MAX, Math.max(EVERY_MIN, n)) : EVERY_DEFAULT;
@@ -313,7 +324,7 @@ function createTrigger({ every = EVERY_DEFAULT, store = null, now = () => new Da
     if (content.length > MAX_CHARS)
       content = content.slice(content.length - MAX_CHARS);
     const turns = slice.filter((r) => r.role === "user").length;
-    const entry = { id: `mv-${chatId.slice(0, 8)}-${slice[0].number}-${slice.at(-1).number}`, title: `\uCD5C\uADFC ${turns}\uD134 \uB300\uD654 (#${slice[0].number}\u2013#${slice.at(-1).number})`, content, enabled: true, origin: "memory-cabinet-adapter", createdAt: now(), updatedAt: now() };
+    const entry = { id: `mv-${chatId.slice(0, 8)}-${slice[0].number}-${slice.at(-1).number}-${rangeHash(slice)}`, title: `\uCD5C\uADFC ${turns}\uD134 \uB300\uD654 (#${slice[0].number}\u2013#${slice.at(-1).number})`, content, enabled: true, origin: "memory-cabinet-adapter", createdAt: now(), updatedAt: now() };
     next.entries = [...s.entries.filter((e) => e.id !== entry.id), entry].slice(-KEEP);
     await persist(chatId, next);
     return entry;
@@ -394,6 +405,8 @@ var spindle_default = {
 // src/backend.js
 var PERMS = ["chats", "chat_mutation", "generation", "world_books", "characters"];
 var safeId = (id) => typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id);
+var BASIC = new Set(["version", "ownerChatId", "enabled", "items"]);
+var pristine = (v) => v == null || typeof v === "object" && !Array.isArray(v) && !(Array.isArray(v.items) && v.items.length) && Object.keys(v).every((k) => BASIC.has(k));
 var fail = (message, status) => Object.assign(new Error(message), { status });
 function start(api, options = {}) {
   const ui = (userId) => `ui-${userId}.json`;
@@ -472,10 +485,11 @@ function start(api, options = {}) {
     return next;
   });
   const claimed = new Map;
-  router.add("POST", "_trigger/claim", ({ body }) => {
-    const id = String(body?.id || "");
-    if (!id)
+  router.add("POST", "_trigger/claim", ({ userId, body }) => {
+    const raw = String(body?.id || "");
+    if (!raw)
       return { ok: false };
+    const id = `${userId}\x00${raw}`;
     const now = Date.now();
     for (const [k, t] of claimed)
       if (now - t > 600000)
@@ -566,13 +580,22 @@ function start(api, options = {}) {
         out[chatId] = { skipped: "chat gone" };
         continue;
       }
-      if (c.metadata?.memoryCabinetV1?.items?.length) {
+      if (!pristine(c.metadata?.memoryCabinetV1)) {
         out[chatId] = { skipped: "already has original data" };
         continue;
       }
       const { data, report } = mapOldToOriginal(files.data, { chatId });
       if (!data.items.length) {
         out[chatId] = { skipped: "nothing importable", ...report };
+        continue;
+      }
+      const again = await api.chats.get(chatId, userId).catch(() => null);
+      if (!again) {
+        out[chatId] = { skipped: "chat gone" };
+        continue;
+      }
+      if (!pristine(again.metadata?.memoryCabinetV1)) {
+        out[chatId] = { skipped: "already has original data" };
         continue;
       }
       await host.patchMetadata(userId, chatId, { memoryCabinetV1: data });

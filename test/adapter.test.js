@@ -141,3 +141,32 @@ test('shim: only the original\'s /api/ paths are ours; Lumiverse\'s own /api/v1 
     for (const u of ['/api/chats/abc', '/api/lorebooks?chatId=x', '/api/generate/raw', '/api/connections', 'http://qa.test/api/chats', '/api/_storage']) assert.equal(isOriginalApi(u), true, u);
     for (const u of ['/api/v1/chats', '/api/v1', '/api/v2/x', '/api/auth/sign-in', '/api/ws', '/qa/harness.html', 'https://example.com/other/api/chats']) assert.equal(isOriginalApi(u), false, u);
 });
+
+test('GET chats/:id/messages is user-scoped: another user gets 404, never the messages (Honey condition 2)', async () => {
+    const { start } = await import('../src/backend.js?m' + Math.random());
+    const h = createFakeHost();
+    h.chat.owner = 'userA'; h.addTurns(2);
+    const stop = start(h.api, { afterMs: 0 });
+    const rpc = (id, user, path) => new Promise(res => { const off = h.ctx.onBackendMessage(m => { if (m.requestId === id) { off(); res(m); } }); h.handlers.frontend({ requestId: id, type: 'api', method: 'GET', path }, user); });
+    const b = await rpc('b1', 'userB', `chats/${h.chat.id}/messages`);
+    stop();
+    assert.equal(b.ok, false); assert.ok(!JSON.stringify(b).includes('사용자 발화'));
+    const stop2 = start(h.api, { afterMs: 0 });
+    const a = await rpc('a1', 'userA', `chats/${h.chat.id}/messages`);
+    stop2();
+    assert.ok(a.ok); assert.equal(a.data.length, 4);
+});
+
+test('_trigger/claim is per user; a regenerated range gets a new trigger id (R3)', async () => {
+    const { start } = await import('../src/backend.js?m' + Math.random());
+    const h = createFakeHost(); const stop = start(h.api, { afterMs: 0 });
+    let n = 0;
+    const claim = (user, id) => new Promise(res => { const rid = 'c' + n++; const off = h.ctx.onBackendMessage(m => { if (m.requestId === rid) { off(); res(m.data.ok); } }); h.handlers.frontend({ requestId: rid, type: 'api', method: 'POST', path: '_trigger/claim', body: { id } }, user); });
+    assert.equal(await claim('userA', 'mv-x'), true); assert.equal(await claim('userA', 'mv-x'), false);
+    assert.equal(await claim('userB', 'mv-x'), true, 'other user is not blocked');
+    stop();
+    const rows = ids => ids.map((id, i) => ({ id, number: i + 1, role: i % 2 ? 'assistant' : 'user', name: 'n', content: 'c' + i, extra: {} }));
+    const fire = async ids => { const t = createTrigger({ every: 3 }); await t.onGenerationEnded('chat-abcdefgh', rows(ids.slice(0, 2))); return t.onGenerationEnded('chat-abcdefgh', rows(ids)); };
+    const e1 = await fire(['a', 'b', 'c', 'd', 'e', 'f']), e2 = await fire(['a', 'b', 'c', 'd', 'e', 'f']), e3 = await fire(['a', 'b', 'c', 'd', 'e', 'X']);
+    assert.equal(e1.id, e2.id); assert.notEqual(e1.id, e3.id);
+});
