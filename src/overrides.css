@@ -35,6 +35,5 @@
 @media (min-width:701px) and (max-width:1100px){#mmc-root-v1 .mmc-tab-long{display:none}#mmc-root-v1 .mmc-tab-short{display:inline}#mmc-root-v1 .mmc-tabs{padding:0 6px}#mmc-root-v1 .mmc-tab{padding:0 9px;gap:5px}}
 #mmc-root-v1 .mmc-label,#mmc-root-v1 .mmc-sync span{font-size:15px}
 #mmc-root-v1 .mmc-detail-empty small,#mmc-root-v1 .mmc-wiki-byline{font-size:13px}
-/* draggable launcher (src/launcher-drag.js): once moved off the right edge it is a full rounded tab; keep 44px target and block page scroll while dragging */
+/* draggable launcher (src/launcher-drag.js): keep the original right-edge tab shape, 44px target, and block page scroll while dragging */
 .mmc-launcher{touch-action:none;min-width:44px;min-height:44px}
-.mmc-launcher.mvx-moved{border-right:1px solid color-mix(in srgb,var(--mv-accent) 70%,#000);border-radius:14px;box-shadow:0 6px 18px rgba(0,0,0,.22)}

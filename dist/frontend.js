@@ -621,24 +621,25 @@ var DRAG_THRESHOLD = 8;
 var LONG_PRESS_MS = 700;
 var EDGE_GAP = 4;
 var KEY = "mvx-launcher-pos-v1";
-function clampPos({ x, y }, { w, h }, { vw, vh }, ins = {}, gap = EDGE_GAP) {
-  const minX = (ins.left || 0) + gap, minY = (ins.top || 0) + gap;
-  const maxX = Math.max(minX, vw - (ins.right || 0) - gap - w), maxY = Math.max(minY, vh - (ins.bottom || 0) - gap - h);
-  return { x: Math.round(Math.min(maxX, Math.max(minX, Number.isFinite(x) ? x : maxX))), y: Math.round(Math.min(maxY, Math.max(minY, Number.isFinite(y) ? y : minY))) };
+function clampPos({ y }, { h }, { vh }, ins = {}, gap = EDGE_GAP) {
+  const minY = (ins.top || 0) + gap;
+  const maxY = Math.max(minY, vh - (ins.bottom || 0) - gap - h);
+  return { y: Math.round(Math.min(maxY, Math.max(minY, Number.isFinite(y) ? y : minY))) };
 }
-function toFrac({ x, y }, size, view, ins = {}, gap = EDGE_GAP) {
-  const lo = clampPos({ x: -1e9, y: -1e9 }, size, view, ins, gap), hi = clampPos({ x: 1e9, y: 1e9 }, size, view, ins, gap);
-  return { fx: hi.x === lo.x ? 1 : (x - lo.x) / (hi.x - lo.x), fy: hi.y === lo.y ? 0 : (y - lo.y) / (hi.y - lo.y) };
+function toFrac(pos, size, view, ins = {}, gap = EDGE_GAP) {
+  const lo = clampPos({ y: -1e9 }, size, view, ins, gap), hi = clampPos({ y: 1e9 }, size, view, ins, gap);
+  const { y } = clampPos(pos, size, view, ins, gap);
+  return { fy: hi.y === lo.y ? 0 : (y - lo.y) / (hi.y - lo.y) };
 }
-function fromFrac({ fx, fy }, size, view, ins = {}, gap = EDGE_GAP) {
-  const lo = clampPos({ x: -1e9, y: -1e9 }, size, view, ins, gap), hi = clampPos({ x: 1e9, y: 1e9 }, size, view, ins, gap);
-  const f = (v) => Math.min(1, Math.max(0, Number.isFinite(v) ? v : 0));
-  return clampPos({ x: lo.x + f(fx) * (hi.x - lo.x), y: lo.y + f(fy) * (hi.y - lo.y) }, size, view, ins, gap);
+function fromFrac({ fy }, size, view, ins = {}, gap = EDGE_GAP) {
+  const lo = clampPos({ y: -1e9 }, size, view, ins, gap), hi = clampPos({ y: 1e9 }, size, view, ins, gap);
+  const f = Math.min(1, Math.max(0, Number.isFinite(fy) ? fy : 0));
+  return clampPos({ y: lo.y + f * (hi.y - lo.y) }, size, view, ins, gap);
 }
 function parseStored(raw) {
   try {
     const o = JSON.parse(raw);
-    return o && Number.isFinite(o.fx) && Number.isFinite(o.fy) ? { fx: o.fx, fy: o.fy } : null;
+    return o && Number.isFinite(o.fy) ? { fy: o.fy } : null;
   } catch {
     return null;
   }
@@ -667,56 +668,48 @@ function installLauncherDrag(win, doc, { id = "mmc-launcher-v1", notify = () => 
       if (!probe) {
         probe = doc.createElement("div");
         probe.setAttribute("aria-hidden", "true");
-        probe.style.cssText = "position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none;padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)";
+        probe.style.cssText = "position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none;padding:env(safe-area-inset-top,0px) 0 env(safe-area-inset-bottom,0px) 0";
         doc.body.append(probe);
       }
       const s = win.getComputedStyle(probe);
-      return { top: parseFloat(s.paddingTop) || 0, right: parseFloat(s.paddingRight) || 0, bottom: parseFloat(s.paddingBottom) || 0, left: parseFloat(s.paddingLeft) || 0 };
+      return { top: parseFloat(s.paddingTop) || 0, bottom: parseFloat(s.paddingBottom) || 0 };
     } catch {
       return {};
     }
   };
-  const view = () => {
-    return { vw: Math.round(win.innerWidth || doc.documentElement.clientWidth), vh: Math.round(win.innerHeight || doc.documentElement.clientHeight) };
-  };
-  const size = () => {
-    const r = el.getBoundingClientRect();
-    return { w: Math.max(44, r.width), h: Math.max(44, r.height) };
-  };
+  const view = () => ({ vh: Math.round(win.innerHeight || doc.documentElement.clientHeight) });
+  const size = () => ({ h: Math.max(44, el.getBoundingClientRect().height) });
   const place = (p) => {
-    el.classList.add("mvx-moved");
-    const s = el.style;
-    s.setProperty("left", p.x + "px", "important");
-    s.setProperty("top", p.y + "px", "important");
-    s.setProperty("right", "auto", "important");
-    s.setProperty("bottom", "auto", "important");
+    el.style.setProperty("top", p.y + "px", "important");
+    el.style.setProperty("bottom", "auto", "important");
   };
   const unplace = () => {
-    el.classList.remove("mvx-moved");
-    for (const k of ["left", "top", "right", "bottom"])
+    for (const k of ["top", "bottom"])
       el.style.removeProperty(k);
   };
   const apply = () => {
     if (!el)
       return;
-    if (!saved) {
-      unplace();
+    if (saved) {
+      place(fromFrac(saved, size(), view(), insets()));
       return;
     }
-    const { vw, vh } = view();
-    place(fromFrac(saved, size(), { vw, vh }, insets()));
+    unplace();
+    const y = el.getBoundingClientRect().top;
+    const p = clampPos({ y }, size(), view(), insets());
+    if (p.y !== Math.round(y))
+      place(p);
   };
   function reset() {
     saved = null;
     store.del();
-    if (el)
-      unplace();
+    apply();
   }
   function onDown(e) {
     if (e.button > 0 || g && g.id !== e.pointerId)
       return;
     const r = el.getBoundingClientRect();
-    g = { id: e.pointerId, sx: e.clientX, sy: e.clientY, ox: r.left, oy: r.top, dragging: false, long: false, timer: null };
+    g = { id: e.pointerId, sx: e.clientX, sy: e.clientY, oy: r.top, dragging: false, long: false, timer: null };
     try {
       el.setPointerCapture?.(e.pointerId);
     } catch {}
@@ -740,8 +733,7 @@ function installLauncherDrag(win, doc, { id = "mmc-launcher-v1", notify = () => 
       win.clearTimeout(g.timer);
     }
     e.preventDefault?.();
-    const { vw, vh } = view();
-    place(clampPos({ x: g.ox + dx, y: g.oy + dy }, size(), { vw, vh }, insets()));
+    place(clampPos({ y: g.oy + dy }, size(), view(), insets()));
   }
   function onUp(e) {
     if (!g || e.pointerId !== g.id)
@@ -751,8 +743,8 @@ function installLauncherDrag(win, doc, { id = "mmc-launcher-v1", notify = () => 
       el.releasePointerCapture?.(e.pointerId);
     } catch {}
     if (g.dragging && e.type === "pointerup") {
-      const r = el.getBoundingClientRect(), { vw, vh } = view();
-      saved = toFrac({ x: r.left, y: r.top }, size(), { vw, vh }, insets());
+      const r = el.getBoundingClientRect();
+      saved = toFrac({ y: r.top }, size(), view(), insets());
       store.set(JSON.stringify(saved));
     }
     if (g.dragging || g.long) {
@@ -1698,9 +1690,8 @@ var ORIGINAL_CSS = `/* 기억 보관함 v2.0.0 · 전역 테마 하나(리본 �
 @media (min-width:701px) and (max-width:1100px){#mmc-root-v1 .mmc-tab-long{display:none}#mmc-root-v1 .mmc-tab-short{display:inline}#mmc-root-v1 .mmc-tabs{padding:0 6px}#mmc-root-v1 .mmc-tab{padding:0 9px;gap:5px}}
 #mmc-root-v1 .mmc-label,#mmc-root-v1 .mmc-sync span{font-size:15px}
 #mmc-root-v1 .mmc-detail-empty small,#mmc-root-v1 .mmc-wiki-byline{font-size:13px}
-/* draggable launcher (src/launcher-drag.js): once moved off the right edge it is a full rounded tab; keep 44px target and block page scroll while dragging */
+/* draggable launcher (src/launcher-drag.js): keep the original right-edge tab shape, 44px target, and block page scroll while dragging */
 .mmc-launcher{touch-action:none;min-width:44px;min-height:44px}
-.mmc-launcher.mvx-moved{border-right:1px solid color-mix(in srgb,var(--mv-accent) 70%,#000);border-radius:14px;box-shadow:0 6px 18px rgba(0,0,0,.22)}
 `;
 function runOriginal(marinara) {
   (() => {
