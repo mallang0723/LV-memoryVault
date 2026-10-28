@@ -241,7 +241,7 @@ var PANEL_CSS = `
 #${ID} label.mvx-check{display:flex;gap:10px;align-items:center;min-height:44px}
 #${ID} label.mvx-check input{width:24px;height:24px;flex:none}
 #${ID} .mvx-note{background:var(--warnbg);color:var(--warn);border-radius:10px;padding:10px 12px;font-size:15px}
-#${ID} .mvx-ok{color:var(--ok);font-weight:600}
+#${ID} details.mvx-skips{font-size:15px;margin:6px 0}#${ID} details.mvx-skips summary{min-height:44px;display:flex;align-items:center;cursor:pointer}#${ID} details.mvx-skips li{font-size:15px;margin:4px 0}#${ID} .mvx-ok{color:var(--ok);font-weight:600}
 #${ID} textarea.mvx-text{width:100%;height:160px;font:15px/1.4 ui-monospace,monospace;background:var(--soft);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:8px}
 #${TOAST}{position:fixed;left:12px;right:12px;bottom:76px;z-index:2147483001;display:flex;justify-content:center;pointer-events:none}
 #${TOAST} div{background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:12px;padding:10px 14px;max-width:520px;box-shadow:0 6px 24px rgba(0,0,0,.35);pointer-events:auto}
@@ -351,12 +351,29 @@ function createPanel(ctx, { request, activeChatId = () => "" }, { win = globalTh
     parts.push(el("section", {}, el("h3", {}, "알아 둘 점"), el("p", { class: "mvx-hint" }, "인물별 비밀(아는 사람 제한)은 이름이 맞을 때만 보이는 조건문으로 로어북에 저장돼요. 이름을 바꾸면 깨지고, 그룹 채팅의 합치기(merge) 모드에서는 새거나 빠질 수 있어요. 자세한 내용은 README의 「한계」를 보세요.")));
     body.replaceChildren(...parts);
   }
+  const SKIP_WHY = { "already has original data": "이미 원본 데이터가 있어요", "nothing importable": "가져올 약속·앵커가 없어요", "chat gone": "채팅을 찾을 수 없어요" };
+  function importSummary(r) {
+    const imp = r.chats || 0, sk = r.skipped || 0, fl = r.failed || 0;
+    const whys = [...new Set((r.skippedList || []).map((x) => SKIP_WHY[x.reason] || x.reason))].join(", ");
+    let text;
+    if (!imp && !fl)
+      text = `가져온 항목이 없어요. 채팅 ${sk}개를 건너뛰었어요${whys ? `(${whys})` : ""}. 기존 데이터는 그대로 안전하고, 받아 둔 백업도 건드리지 않았어요.`;
+    else if (!imp)
+      text = `가져오지 못했어요. 실패 ${fl}개${sk ? `, 건너뜀 ${sk}개` : ""}. 기존 데이터와 백업은 그대로예요. 다시 시도해 보세요.`;
+    else
+      text = `가져왔어요: 채팅 ${imp}개(항목 ${r.imported ?? 0}개)${sk ? `, 건너뜀 ${sk}개${whys ? `(${whys})` : ""}` : ""}${fl ? `, 실패 ${fl}개(다시 시도할 수 있어요)` : ""}. 각 채팅에서 기억 보관함을 열어 확인하세요.`;
+    return { text };
+  }
   function migrationSection(m) {
     const sec = el("section", { id: "mvx-migrate" }, el("h3", {}, "0.4.x 데이터 옮기기"));
+    const r = m.result;
+    const resultNodes = () => r ? [
+      el("p", { class: r.failed || !r.chats && r.skipped ? "mvx-note" : "mvx-ok" }, importSummary(r).text),
+      r.skippedList?.length ? el("details", { class: "mvx-skips" }, el("summary", {}, `건너뛴 채팅 ${r.skippedList.length}개 보기`), el("ul", {}, r.skippedList.map((x) => el("li", {}, `${x.name || "(이름 없는 채팅)"} — ${SKIP_WHY[x.reason] || x.reason}`)))) : null,
+      importResult && r.chats ? el("p", { class: "mvx-hint" }, `보류로 들어온 항목(주입 안 함) ${Object.values(importResult).reduce((n, x) => n + (x.held || 0), 0)}개. 원본 화면에서 확인하세요.`) : null
+    ] : [];
     if (m.importedAt) {
-      sec.append(el("p", { class: "mvx-ok" }, `가져왔어요: 채팅 ${m.result?.chats ?? "?"}개, 항목 ${m.result?.imported ?? "?"}개.`));
-      if (importResult)
-        sec.append(el("p", { class: "mvx-hint" }, `보류로 들어온 항목(주입 안 함) ${Object.values(importResult).reduce((n, r) => n + (r.held || 0), 0)}개. 원본 화면에서 확인하세요.`));
+      sec.append(...resultNodes());
       return sec;
     }
     sec.append(el("p", {}, `옛 버전(0.4.x)이 남긴 기억이 채팅 ${m.oldChats}개, 항목 ${m.oldItems}개 있어요. 새 버전은 저장 형식이 달라 자동으로는 이어지지 않아요.`), el("p", { class: "mvx-hint" }, `① 백업을 먼저 받으세요(전부 들어 있어요). ② 약속·앵커 ${m.importable}개만 새 형식으로 가져올 수 있어요. 장면록·요소·흐름·위키·후보·되돌리기는 백업 파일에만 남습니다.`));
@@ -377,6 +394,8 @@ function createPanel(ctx, { request, activeChatId = () => "" }, { win = globalTh
     });
     sec.append(el("label", { class: "mvx-check" }, chk, "백업을 저장했어요"));
     sec.append(el("div", { class: "mvx-row" }, el("button", { type: "button", id: "mvx-import", class: "mvx-primary", disabled: busy || !backedUp || !chk.checked, onclick: doImport }, `② 약속·앵커 ${m.importable}개 가져오기`), el("button", { type: "button", id: "mvx-dismiss", disabled: busy, onclick: doDismiss }, "다시 묻지 않기")));
+    if (r)
+      sec.append(...resultNodes());
     return sec;
   }
   async function doBackup(_e, asText = false) {
@@ -417,7 +436,8 @@ function createPanel(ctx, { request, activeChatId = () => "" }, { win = globalTh
     try {
       importResult = await call("POST", "_migrate/apply", { confirmBackup: true });
       await refresh();
-      toast("가져왔어요. 각 채팅에서 기억 보관함을 열어 확인하세요.");
+      const rows = Object.values(importResult || {});
+      toast(importSummary({ chats: rows.filter((x) => !x.skipped && !x.failed).length, imported: rows.reduce((n, x) => n + (x.items || 0), 0), skipped: rows.filter((x) => x.skipped).length, failed: rows.filter((x) => x.failed).length, skippedList: rows.filter((x) => x.skipped).map((x) => ({ name: x.name, reason: x.skipped })) }).text);
     } catch (e) {
       toast(`가져오지 못했어요: ${e.message}`);
     }

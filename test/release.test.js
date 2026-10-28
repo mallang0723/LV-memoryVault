@@ -87,6 +87,31 @@ test('panel: 0.4.x data -> prompt opens; import stays locked until backup + "I s
         await until(() => host.chat.metadata.memoryCabinetV1?.items?.length === 2);
         assert.deepEqual(host.chat.metadata.memoryCabinetV1.items.map(i => i.type).sort(), ['anchor', 'promise']);
         await until(() => /가져왔어요/.test($('#mvx-migrate')?.textContent || ''));
+        assert.match($('#mvx-migrate').textContent, /채팅 1개\(항목 2개\)/); assert.doesNotMatch($('#mvx-migrate').textContent, /건너뜀|실패/);
+    } finally { URL.createObjectURL = realCreate; panel.dispose(); env.shim.dispose(); env.stop(); }
+});
+test('panel: everything skipped (already has original data) -> no "imported" claim; says data and backup are safe; lists skipped chat collapsed', async () => {
+    const host = createFakeHost();
+    const mine = { version: 1, ownerChatId: 'chat1', enabled: true, items: [{ id: 'x', type: 'anchor', title: 't', content: 'c' }] };
+    host.chat.metadata.memoryCabinetV1 = structuredClone(mine); host.chat.name = '여름 이야기';
+    const env = await boot(host);
+    const panel = createPanel(env.ctx, env.shim, { win: env.win, doc: env.document });
+    const realCreate = URL.createObjectURL; URL.createObjectURL = () => { throw new Error('no blob urls here'); };
+    try {
+        await panel.promptIfMigrationPending();
+        const $ = s => env.document.querySelector(s);
+        await until(() => $('#mvx-migrate'));
+        $('#mvx-backup').click(); await until(() => $('textarea.mvx-text'));
+        $('#mvx-saved').checked = true; $('#mvx-saved').dispatchEvent(new env.document.defaultView.Event('change', { bubbles: true }));
+        await until(() => !$('#mvx-import').disabled);
+        $('#mvx-import').click();
+        await until(() => /건너뛰었어요/.test($('#mvx-migrate')?.textContent || ''));
+        const t = $('#mvx-migrate').textContent;
+        assert.doesNotMatch(t, /가져왔어요/); assert.match(t, /가져온 항목이 없어요/); assert.match(t, /채팅 1개를 건너뛰었어요/); assert.match(t, /이미 원본 데이터가 있어요/); assert.match(t, /그대로 안전/); assert.match(t, /백업/);
+        assert.match($('#mvx-migrate details.mvx-skips').textContent, /여름 이야기/);
+        assert.doesNotMatch(env.document.getElementById('mvx-toast')?.textContent || '', /가져왔어요/);
+        assert.match(env.document.getElementById('mvx-toast')?.textContent || '', /가져온 항목이 없어요/);
+        assert.deepEqual(host.chat.metadata.memoryCabinetV1, mine);
     } finally { URL.createObjectURL = realCreate; panel.dispose(); env.shim.dispose(); env.stop(); }
 });
 test('panel: nothing to migrate -> no prompt; interval can be saved; entry action opens the screen', async () => {

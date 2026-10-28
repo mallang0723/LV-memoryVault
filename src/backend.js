@@ -135,17 +135,23 @@ export function start(api, options = {}) {
             if (!files.data?.items?.length) continue;
             const c = await api.chats.get(chatId, userId).catch(() => null);
             if (!c) { out[chatId] = { skipped: 'chat gone' }; continue; }
-            if (!pristine(c.metadata?.memoryCabinetV1)) { out[chatId] = { skipped: 'already has original data' }; continue; }
+            const name = typeof c.name === 'string' ? c.name : '';
+            if (!pristine(c.metadata?.memoryCabinetV1)) { out[chatId] = { name, skipped: 'already has original data' }; continue; }
             const { data, report } = mapOldToOriginal(files.data, { chatId });
-            if (!data.items.length) { out[chatId] = { skipped: 'nothing importable', ...report }; continue; }
+            if (!data.items.length) { out[chatId] = { name, skipped: 'nothing importable', ...report }; continue; }
             // R4: re-read right before the write; the original may have saved its own data since the first read
             const again = await api.chats.get(chatId, userId).catch(() => null);
-            if (!again) { out[chatId] = { skipped: 'chat gone' }; continue; }
-            if (!pristine(again.metadata?.memoryCabinetV1)) { out[chatId] = { skipped: 'already has original data' }; continue; }
-            await host.patchMetadata(userId, chatId, { memoryCabinetV1: data });
-            out[chatId] = report;
+            if (!again) { out[chatId] = { name, skipped: 'chat gone' }; continue; }
+            if (!pristine(again.metadata?.memoryCabinetV1)) { out[chatId] = { name, skipped: 'already has original data' }; continue; }
+            try { await host.patchMetadata(userId, chatId, { memoryCabinetV1: data }); }
+            catch (e) { out[chatId] = { name, failed: String(e?.message || e) }; continue; }
+            out[chatId] = { name, ...report };
         }
-        await write(userId, MIG, { ...st, importedAt: new Date().toISOString(), result: { chats: Object.keys(out).length, imported: Object.values(out).reduce((n, r) => n + (r.items || 0), 0) } });
+        const rs = Object.values(out);
+        const skippedList = Object.values(out).filter(r => r.skipped).map(r => ({ name: r.name || '', reason: r.skipped }));
+        const result = { chats: rs.filter(r => !r.skipped && !r.failed).length, imported: rs.reduce((n, r) => n + (r.items || 0), 0), skipped: skippedList.length, failed: rs.filter(r => r.failed).length, skippedList };
+        // a failure leaves the one-time import open so it can be retried (already-imported chats then count as skipped)
+        await write(userId, MIG, { ...st, ...(result.failed ? {} : { importedAt: new Date().toISOString() }), result });
         return out;
     });
 

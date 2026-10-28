@@ -96,3 +96,30 @@ test('apply never clobbers an existing memoryCabinetV1 (Honey condition 1)', asy
     r = await run(undefined); assert.equal(r.host.chat.metadata.memoryCabinetV1.items.length, 4);
     r = await run({ version: 1, ownerChatId: 'chat1', enabled: true, items: [] }); assert.equal(r.host.chat.metadata.memoryCabinetV1.items.length, 4);
 });
+
+test('apply reports per-chat name/skipped/failed and counts; a write failure leaves the import retryable', async () => {
+    const { start } = await import('../src/backend.js?m' + Math.random());
+    const host = createFakeHost();
+    host.store.set('chats/chat1/data.json', OLD);
+    host.chat.name = '첫 채팅';
+    const realUpdate = host.api.chats.update;
+    host.api.chats.update = async () => { throw new Error('disk full'); };
+    const stop = start(host.api, { afterMs: 0 });
+    const rpc = (id, method, path, body) => new Promise(res => { const off = host.ctx.onBackendMessage(m => { if (m.requestId === id) { off(); res(m); } }); host.handlers.frontend({ requestId: id, type: 'api', method, path, body }, 'user1'); });
+    await rpc('b', 'GET', '_migrate/backup');
+    let reply = await rpc('a1', 'POST', '_migrate/apply', { confirmBackup: true });
+    assert.ok(reply.ok, JSON.stringify(reply));
+    assert.equal(reply.data.chat1.name, '첫 채팅'); assert.match(reply.data.chat1.failed, /disk full/);
+    let st = (await rpc('s1', 'GET', '_migrate/status')).data;
+    assert.equal(st.importedAt, null, 'failure keeps the import open'); assert.equal(st.result.failed, 1); assert.equal(st.result.chats, 0);
+    host.api.chats.update = realUpdate;
+    reply = await rpc('a2', 'POST', '_migrate/apply', { confirmBackup: true });
+    assert.equal(reply.data.chat1.items, 4);
+    st = (await rpc('s2', 'GET', '_migrate/status')).data;
+    assert.ok(st.importedAt); assert.deepEqual([st.result.chats, st.result.imported, st.result.skipped, st.result.failed], [1, 4, 0, 0]);
+    reply = await rpc('a3', 'POST', '_migrate/apply', { confirmBackup: true });
+    assert.deepEqual([reply.data.chat1.skipped, reply.data.chat1.name], ['already has original data', '첫 채팅']);
+    st = (await rpc('s3', 'GET', '_migrate/status')).data;
+    assert.deepEqual(st.result.skippedList, [{ name: '첫 채팅', reason: 'already has original data' }]);
+    stop();
+});
